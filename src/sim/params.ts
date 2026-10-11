@@ -30,11 +30,15 @@ export const params: Params = {
   h: 1.0,
   spacing: 0.4,
   restDensity: 1000,
-  stiffness: 2000,
+  // Tuned from the handoff's 2000 / 0.05 / 0.002 (see scripts/check-sim.ts):
+  // k=2000 compressed the bulk ~8% and never settled; k=6000 keeps it ~2–3%.
+  // c_s = √k ≈ 77, so CFL allows dt ≤ 0.4·h/c_s ≈ 0.005. dt=0.004 halves the
+  // substeps per frame (~4 at 60 fps), which is what makes real time affordable.
+  stiffness: 6000,
   useTait: false,
-  viscosityEps: 0.05,
+  viscosityEps: 0.1,
   gravity: [0, -9.8],
-  dt: 0.002,
+  dt: 0.004,
   maxSubsteps: 8,
   restitution: 0.3,
   domain: { min: [0, 0], max: [40, 30] },

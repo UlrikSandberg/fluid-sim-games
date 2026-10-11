@@ -1,11 +1,15 @@
 import { params } from './sim/params'
-import { createState, step } from './sim/sph'
+import { createState, step, type SimState } from './sim/sph'
 import { Renderer } from './render/renderer'
+import { getColorMode, view, writeColors } from './render/colorModes'
 
 export interface Stats {
   fps: number
   particles: number
   substeps: number // average substeps per frame
+  densityAvg: number // ρ/ρ₀
+  densityMax: number // ρ/ρ₀
+  neighborsAvg: number
 }
 
 const STATS_INTERVAL_MS = 250 // ~4 Hz
@@ -39,6 +43,8 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
     if (substeps === params.maxSubsteps) accumulator = Math.min(accumulator, params.dt)
 
     renderer.updatePositions(state.pos, state.n)
+    writeColors(getColorMode(view.colorMode), state, params, renderer.colors)
+    renderer.commitColors()
     renderer.render()
 
     frames++
@@ -48,6 +54,7 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
         fps: (frames * 1000) / (now - statsStart),
         particles: state.n,
         substeps: substepTotal / frames,
+        ...fieldStats(state),
       })
       frames = 0
       substepTotal = 0
@@ -62,4 +69,17 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
     cancelAnimationFrame(raf)
     renderer.dispose()
   }
+}
+
+function fieldStats(s: SimState) {
+  let sum = 0
+  let max = 0
+  let neighbors = 0
+  for (let i = 0; i < s.n; i++) {
+    const r = s.density[i] / params.restDensity
+    sum += r
+    if (r > max) max = r
+    neighbors += s.neighborCount[i]
+  }
+  return { densityAvg: sum / s.n, densityMax: max, neighborsAvg: neighbors / s.n }
 }

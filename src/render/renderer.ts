@@ -12,6 +12,8 @@ export class Renderer {
   private readonly scene = new THREE.Scene()
   private readonly camera = new THREE.OrthographicCamera()
   private readonly mesh: THREE.InstancedMesh
+  // Per-instance linear RGB (stride 3). Fill it, then call commitColors().
+  readonly colors: Float32Array
   private readonly bounds: THREE.Box3Helper
   private readonly resizeObserver: ResizeObserver
   private readonly container: HTMLElement
@@ -31,9 +33,12 @@ export class Renderer {
     this.camera.far = 100
 
     const geometry = new THREE.CircleGeometry(1, 10)
-    const material = new THREE.MeshBasicMaterial({ color: 0x4fa3ff })
+    const material = new THREE.MeshBasicMaterial({ color: 0xffffff })
     this.mesh = new THREE.InstancedMesh(geometry, material, count)
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    this.colors = new Float32Array(count * 3).fill(1)
+    this.mesh.instanceColor = new THREE.InstancedBufferAttribute(this.colors, 3)
+    this.mesh.instanceColor.setUsage(THREE.DynamicDrawUsage)
     // Instances move every frame; a cached bounding sphere would go stale.
     this.mesh.frustumCulled = false
     const m = new THREE.Matrix4().makeScale(radius, radius, radius)
@@ -59,6 +64,10 @@ export class Renderer {
     }
     this.mesh.count = n
     this.mesh.instanceMatrix.needsUpdate = true
+  }
+
+  commitColors() {
+    this.mesh.instanceColor!.needsUpdate = true
   }
 
   render() {

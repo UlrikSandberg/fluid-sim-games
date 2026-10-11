@@ -1,5 +1,7 @@
-import { DIM, particleMass, type Params } from './params'
-import { mulberry32 } from './rng'
+import { DIM, particleMass, type Params } from './params.ts'
+import { mulberry32 } from './rng.ts'
+import { makeKernels, poly6, spikyGradMag, type Kernels } from './kernels.ts'
+import { buildGrid, buildNeighbors, createGrid, type SpatialGrid } from './spatialHash.ts'
 
 // Structure-of-arrays particle state. Vector fields have stride DIM.
 export interface SimState {
@@ -7,10 +9,12 @@ export interface SimState {
   mass: number
   pos: Float32Array
   vel: Float32Array
+  velScratch: Float32Array // XSPH writes here, then swaps with vel
   acc: Float32Array
   density: Float32Array
   pressure: Float32Array
   neighborCount: Uint16Array
+  grid: SpatialGrid
 }
 
 export function createState(p: Params): SimState {
@@ -20,17 +24,19 @@ export function createState(p: Params): SimState {
     mass: particleMass(p),
     pos: new Float32Array(n * DIM),
     vel: new Float32Array(n * DIM),
+    velScratch: new Float32Array(n * DIM),
     acc: new Float32Array(n * DIM),
     density: new Float32Array(n),
     pressure: new Float32Array(n),
     neighborCount: new Uint16Array(n),
+    grid: createGrid(p.domain, p.h, n),
   }
   seedBlock(s, p)
   return s
 }
 
 // Lay particles out on a grid in a block anchored at the domain's min corner
-// (a dam break). Axis 0 is filled to `fill[0]` of the domain width, then rows
+// (a dam break). Axis 0 is filled to `fill` of the domain width, then rows
 // stack along the remaining axes. A tiny seeded jitter breaks perfect symmetry.
 function seedBlock(s: SimState, p: Params) {
   const { min, max } = p.domain
@@ -54,23 +60,104 @@ function seedBlock(s: SimState, p: Params) {
 }
 
 // One fixed-dt substep.
-// TODO: spatial hash → density → pressure (EOS) → pressure + XSPH forces.
-// For now this only integrates gravity and resolves walls, to prove the loop.
 export function step(s: SimState, p: Params) {
-  const { n, pos, vel, acc } = s
-  const dt = p.dt
+  if (s.grid.cellSize !== p.h) s.grid = createGrid(p.domain, p.h, s.n)
+  buildGrid(s.grid, s.pos, s.n)
+  buildNeighbors(s.grid, s.pos, s.n, p.h)
+
+  const k = makeKernels(p.h)
+  computeDensityPressure(s, p, k)
+  computeAccelerations(s, p, k)
+  integrate(s, p, k)
+  resolveBoundaries(s, p)
+}
+
+// ρ_i = Σ_j m W(r_ij) including self, then pressure from the EOS.
+function computeDensityPressure(s: SimState, p: Params, k: Kernels) {
+  const { n, mass, density, pressure, neighborCount } = s
+  const { neighborStart, neighborEnd, neighborDist2 } = s.grid
+  const self = mass * poly6(k, 0)
+
+  for (let i = 0; i < n; i++) {
+    let rho = self
+    const start = neighborStart[i]
+    const end = neighborEnd[i]
+    for (let q = start; q < end; q++) rho += mass * poly6(k, neighborDist2[q])
+    density[i] = rho
+    neighborCount[i] = end - start
+    pressure[i] = equationOfState(rho, p)
+  }
+}
+
+// Linear: p = k(ρ − ρ₀). Tait: p = B((ρ/ρ₀)^7 − 1), with B = stiffness.
+// Both clamped to ≥ 0 to avoid tensile clustering. The 7th power is written as
+// multiplications: Math.pow is not guaranteed bit-identical across JS engines.
+function equationOfState(rho: number, p: Params): number {
+  let pr: number
+  if (p.useTait) {
+    const x = rho / p.restDensity
+    const x2 = x * x
+    const x4 = x2 * x2
+    pr = p.stiffness * (x4 * x2 * x - 1)
+  } else {
+    pr = p.stiffness * (rho - p.restDensity)
+  }
+  return pr > 0 ? pr : 0
+}
+
+// a_i = g − (1/ρ_i) Σ_j m (p_i + p_j)/(2ρ_j) ∇W_spiky(r_ij)
+// With ∇W = −C(h − r)² r̂ and r̂ = (x_i − x_j)/r, this pushes i away from j.
+function computeAccelerations(s: SimState, p: Params, k: Kernels) {
+  const { n, pos, acc, mass, density, pressure } = s
+  const { neighborStart, neighborEnd, neighbors, neighborDist2 } = s.grid
 
   for (let i = 0; i < n; i++) {
     for (let d = 0; d < DIM; d++) acc[i * DIM + d] = p.gravity[d]
-  }
 
-  // Symplectic Euler: velocity first, then position with the new velocity.
-  for (let k = 0; k < n * DIM; k++) {
-    vel[k] += acc[k] * dt
-    pos[k] += vel[k] * dt
+    const pi = pressure[i]
+    const rhoi = density[i]
+    for (let q = neighborStart[i], end = neighborEnd[i]; q < end; q++) {
+      const j = neighbors[q]
+      const r2 = neighborDist2[q]
+      if (r2 < 1e-12) continue // coincident particles: direction undefined
+      const r = Math.sqrt(r2)
+      const shared = (mass * (pi + pressure[j])) / (2 * density[j])
+      const scale = (shared * spikyGradMag(k, r)) / (r * rhoi)
+      for (let d = 0; d < DIM; d++) {
+        acc[i * DIM + d] += scale * (pos[i * DIM + d] - pos[j * DIM + d])
+      }
+    }
   }
+}
 
-  resolveBoundaries(s, p)
+// Symplectic Euler with XSPH velocity smoothing between the velocity and
+// position updates:  v_i += ε Σ_j (m/ρ_j)(v_j − v_i) W(r_ij).
+// XSPH reads the old velocities and writes a scratch buffer, so the result
+// does not depend on particle visiting order.
+function integrate(s: SimState, p: Params, k: Kernels) {
+  const { n, pos, acc, mass, density } = s
+  const { neighborStart, neighborEnd, neighbors, neighborDist2 } = s.grid
+  const dt = p.dt
+  const eps = p.viscosityEps
+  const vel = s.vel
+  const out = s.velScratch
+
+  for (let q = 0; q < n * DIM; q++) vel[q] += acc[q] * dt
+
+  for (let i = 0; i < n; i++) {
+    for (let d = 0; d < DIM; d++) out[i * DIM + d] = vel[i * DIM + d]
+    for (let q = neighborStart[i], end = neighborEnd[i]; q < end; q++) {
+      const j = neighbors[q]
+      const w = (eps * mass * poly6(k, neighborDist2[q])) / density[j]
+      for (let d = 0; d < DIM; d++) {
+        out[i * DIM + d] += w * (vel[j * DIM + d] - vel[i * DIM + d])
+      }
+    }
+  }
+  s.vel = out
+  s.velScratch = vel
+
+  for (let q = 0; q < n * DIM; q++) pos[q] += out[q] * dt
 }
 
 // Reflect the normal velocity with restitution and clamp back inside the box.
