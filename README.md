@@ -108,5 +108,13 @@ reads ρ/ρ₀ = 0.994 with 20 neighbours.
   of Archimedes' draft, and a 1.5 ρ₀ box sinking and resting flat. Wall contact uses
   per-corner impulses with friction, so a box landing on a corner topples. Rotation
   is a single angle, so it is 2D only.
+- **Bodies rest `h` above the walls, and walls are free-slip.** Buoyancy is pressure
+  on the bottom face, and particles can't represent a gap thinner than one spacing.
+  So a body resting flush on the floor sealed the fluid out and acted like a suction
+  cup: a sunk box made light didn't move for seconds. The `h` gap stands in for the
+  thin film real water keeps under objects. Dropping XSPH friction against the walls
+  (the floating body keeps it) doubled how fast fluid flows back into that gap.
+  A sunk box made light now rises about 13 units in 8 s. A short lag remains; that
+  part is real (water has to flow in sideways under a wide box before it can lift).
 - **Performance headroom is thin.** The next levers are processing each pair once
   instead of twice, or Position Based Fluids, which allows much larger timesteps.

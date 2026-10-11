@@ -407,8 +407,18 @@ const CONTACT_FRICTION = 0.5 // Coulomb μ between the body and the walls
 // restitution) plus a Coulomb friction impulse, both applied at the corner, so
 // contact produces torque: a box landing on a corner topples flat instead of
 // balancing on it. Corners and walls are visited in a fixed order (determinism).
+//
+// For the body, the walls are inset by one kernel radius h. Buoyancy is pressure
+// on the bottom face, and a body resting flush on the floor seals the fluid out
+// from under it: the particles can't represent a gap thinner than one spacing, so
+// every resting body acted like a suction cup (a sunk box made light didn't move
+// for seconds). The gap stands in for the thin film real water keeps under objects
+// thanks to surface roughness. It is h rather than one spacing because a film
+// that thin holds only a layer or two of particles: they never reach rest density,
+// their pressure clamps to zero, and the seal effectively remains.
 function collideBodyWithWalls(o: Obstacle, p: Params, mass: number, inertia: number) {
-  const { min, max } = p.domain
+  const min = p.domain.min.map((v) => v + p.h)
+  const max = p.domain.max.map((v) => v - p.h)
   for (const sx of [-1, 1]) {
     for (const sy of [-1, 1]) {
       for (let d = 0; d < DIM; d++) {
@@ -618,8 +628,11 @@ function applyCurrent(s: SimState, p: Params, mouse: MouseInput) {
 // Symplectic Euler with XSPH velocity smoothing between the velocity and
 // position updates:  v_i += ε Σ_j (m/ρ_j)(v_j − v_i) W(r_ij).
 // XSPH reads the old velocities and writes a scratch buffer, so the result
-// does not depend on particle visiting order. Boundary neighbours take part with
-// their own (wall or obstacle) velocity and ρ₀.
+// does not depend on particle visiting order. Obstacle boundary particles take
+// part with their own velocity and ρ₀ (skin friction, so a current carries the
+// body). Wall particles are skipped: free-slip walls. A no-slip floor made fluid
+// drag into the gap under a resting body as if into a narrow viscous channel,
+// halving how fast a sunk body made light could lift off.
 function integrate(s: SimState, p: Params, k: Kernels) {
   const { n, pos, acc, mass, weight, density } = s
   const { neighborStart, neighborEnd, neighbors, neighborDist2 } = s.grid
@@ -636,6 +649,7 @@ function integrate(s: SimState, p: Params, k: Kernels) {
     for (let d = 0; d < DIM; d++) out[i * DIM + d] = vel[i * DIM + d]
     for (let q = neighborStart[i], end = neighborEnd[i]; q < end; q++) {
       const j = neighbors[q]
+      if (j >= n && j < bodyStart) continue // free-slip walls
       const w = (eps * weight[j] * poly6(k, neighborDist2[q])) / density[j]
       for (let d = 0; d < DIM; d++) {
         out[i * DIM + d] += w * (vel[j * DIM + d] - vel[i * DIM + d])

@@ -1,6 +1,9 @@
 // Archimedes check for the dynamic obstacle: a box dropped onto a settled pool
 // must float level with draft = (ρ_body/ρ₀) · height, and a box denser than the
-// fluid must sink to the floor. Nothing in the solver models buoyancy directly;
+// fluid must sink to the floor (resting h above it: the contact gap that keeps a
+// film of fluid underneath). That sunk box, made light, must then lift off
+// promptly rather than stick like a suction cup. Nothing in the solver models
+// buoyancy directly;
 // it has to come out of the fluid's pressure forces on the body's boundary
 // particles. Usage: node scripts/buoyancy.ts
 import { DIM, defaultParams, particleRadius, type Params } from '../src/sim/params.ts'
@@ -10,6 +13,8 @@ const SIZE = [6, 3]
 const DROP_AT = [20, 22] // above the pool, which settles at ~14.5
 const FLOAT_SECONDS = 30
 const AVERAGE_LAST = 5 // seconds averaged at the end, to smooth out bobbing
+const LIFT_SECONDS = 8
+const LIFT_MIN_RISE = 6
 
 const base: Params = { ...structuredClone(defaultParams), obstacleDynamic: true }
 const settled = createState(base)
@@ -76,10 +81,22 @@ for (const ratio of [0.25, 0.5, 0.75, 1.5]) {
   } else {
     // Resting flat means a multiple of 90°: lying on a long side or (less likely) a short one.
     const offFlat = Math.abs(angle - (Math.PI / 2) * Math.round(angle / (Math.PI / 2)))
+    const restsAt = p.domain.min[1] + p.h
     check(
       `sinks and rests flat at ρ_body/ρ₀ = ${ratio}`,
-      bottom < p.domain.min[1] + 0.5 && offFlat < 0.1,
-      `lowest point at y=${bottom.toFixed(2)}, tilt ${tilt}`,
+      Math.abs(bottom - restsAt) < 0.1 && offFlat < 0.1,
+      `lowest point at y=${bottom.toFixed(2)} (contact gap puts it at ${restsAt.toFixed(2)}), tilt ${tilt}`,
+    )
+
+    // Now make it light. It used to stay sealed to the floor for seconds.
+    p.obstacleDensity = 0.25
+    const startY = o.center[1]
+    for (let k = 0; k < LIFT_SECONDS / p.dt; k++) step(s, p)
+    const rise = o.center[1] - startY
+    check(
+      `lifts off the floor when made light (0.25 ρ₀)`,
+      rise >= LIFT_MIN_RISE,
+      `rose ${rise.toFixed(2)} in ${LIFT_SECONDS} s (≥ ${LIFT_MIN_RISE})`,
     )
   }
 }
