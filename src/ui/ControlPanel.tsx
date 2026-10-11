@@ -1,7 +1,7 @@
 import { useReducer, useState, type ReactNode } from 'react'
 import { cflDt, defaultParams, mouseSpeedCap, params, type Params } from '../sim/params'
 import { blockCapacity } from '../sim/sph'
-import { colorModes, type ColorModeId } from '../render/colorModes'
+import { colorModes, type ColorModeId, type RenderStyle } from '../render/colorModes'
 import { BRUSH_MODES, type BrushMode, type SimController } from '../loop'
 
 // Fields only read when the particles are created; editing them marks a reset as pending.
@@ -13,6 +13,8 @@ interface Props {
   controller: () => SimController | null
   colorMode: ColorModeId
   onColorMode: (id: ColorModeId) => void
+  renderStyle: RenderStyle
+  onRenderStyle: (style: RenderStyle) => void
   paused: boolean
   onTogglePause: () => void
   brushMode: BrushMode
@@ -21,7 +23,7 @@ interface Props {
 
 // Writes straight into the shared mutable `params`; the loop picks changes up on
 // its next step. React re-renders only on input events, never per frame.
-export function ControlPanel({ controller, colorMode, onColorMode, paused, onTogglePause, brushMode, onBrushMode }: Props) {
+export function ControlPanel({ controller, colorMode, onColorMode, renderStyle, onRenderStyle, paused, onTogglePause, brushMode, onBrushMode }: Props) {
   const [, rerender] = useReducer((x: number) => x + 1, 0)
   const [applied, setApplied] = useState(snapshotInit)
 
@@ -55,6 +57,17 @@ export function ControlPanel({ controller, colorMode, onColorMode, paused, onTog
       </div>
 
       <Section title="View">
+        <div className="row">
+          <span>Draw</span>
+          <div className="toggle" role="radiogroup" title="V toggles">
+            {(['particles', 'water'] as const).map((style) => (
+              <button key={style} role="radio" aria-checked={renderStyle === style}
+                className={renderStyle === style ? 'on attract' : undefined} onClick={() => onRenderStyle(style)}>
+                {style === 'water' ? 'Water' : 'Particles'}
+              </button>
+            ))}
+          </div>
+        </div>
         <label className="row">
           <span>Colour</span>
           <select value={colorMode} onChange={(e) => onColorMode(e.target.value as ColorModeId)}>

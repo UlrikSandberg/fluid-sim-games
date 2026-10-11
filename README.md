@@ -26,7 +26,8 @@ npm run check -- 20 stiffness=8000 dt=0.003   # headless dam break with param ov
 | Ctrl + click | Place the rectangle obstacle (replaces an existing one) |
 | Left drag inside the obstacle | Move it (speed-capped like the brush); a floating one keeps its velocity on release, so you can throw it |
 | Right click on the obstacle | Delete it |
-| `1`–`4` | Colour mode: density ρ/ρ₀, neighbour count, speed, pressure |
+| `1`–`5` | Colour mode: density ρ/ρ₀, neighbour count, speed, pressure, water (foam = speed) |
+| `V`, or the panel's Draw toggle | Particles (diagnostic dots) or Water (smooth surface) |
 | Space | Pause / resume |
 
 In **current** mode, pressing anchors the brush and dragging draws an arrow from
@@ -45,7 +46,8 @@ src/sim/       solver: plain TypeScript over typed arrays, no DOM, runs in Node
   kernels.ts     Poly6 + Spiky; the only place with dimension-specific constants
   spatialHash.ts counting-sort cell grid, deterministic neighbour lists
   sph.ts         state arrays and step()
-src/render/    three.js: one InstancedMesh, orthographic camera, colour modes
+src/render/    three.js: one InstancedMesh, orthographic camera, colour modes,
+               waterSurface.ts (metaball field + threshold pass)
 src/ui/        React: control panel, HUD, legend; never re-renders per frame
 src/loop.ts    fixed-timestep loop, mouse input, glue between sim and renderer
 scripts/       determinism.ts, acceptance.ts, check-sim.ts (tuning)

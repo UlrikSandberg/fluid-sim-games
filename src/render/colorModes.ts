@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { DIM, type Params } from '../sim/params'
 import type { SimState } from '../sim/sph'
 
-export type ColorModeId = 'density' | 'neighbors' | 'speed' | 'pressure'
+export type ColorModeId = 'density' | 'neighbors' | 'speed' | 'pressure' | 'water'
 
 export interface ColorMode {
   id: ColorModeId
@@ -20,6 +20,8 @@ const COOLWARM = ['#3b4cc0', '#8db0fe', '#dddddd', '#f49a7b', '#b40426']
 const VIRIDIS = ['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725']
 const ICE = ['#1d3b6e', '#1f6fb2', '#3fa7d6', '#9bdcf2', '#f2fbff']
 const MAGMA = ['#3b0f70', '#8c2981', '#de4968', '#fe9f6d', '#fcfdbf']
+// Not a diagnostic: deep blue water that foams to white where it moves fast.
+const WATER = ['#0a3a7a', '#1660b8', '#2b8ad6', '#7cc8f2', '#ffffff']
 
 export const colorModes: ColorMode[] = [
   {
@@ -56,10 +58,23 @@ export const colorModes: ColorMode[] = [
     stops: MAGMA,
     scalar: (s, _p, i) => s.pressure[i],
   },
+  {
+    id: 'water',
+    label: 'Water (foam = speed)',
+    range: [0, 14],
+    stops: WATER,
+    scalar: (s, _p, i) => {
+      let v2 = 0
+      for (let d = 0; d < DIM; d++) v2 += s.vel[i * DIM + d] ** 2
+      return Math.sqrt(v2)
+    },
+  },
 ]
 
+export type RenderStyle = 'particles' | 'water'
+
 // Mutable view settings, read by the loop each frame (like `params`).
-export const view = { colorMode: 'density' as ColorModeId }
+export const view = { colorMode: 'density' as ColorModeId, style: 'particles' as RenderStyle }
 
 export function getColorMode(id: ColorModeId): ColorMode {
   return colorModes.find((m) => m.id === id) ?? colorModes[0]

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { BRUSH_MODES, brush, startLoop, type BrushMode, type SimController } from '../loop'
-import { colorModes, getColorMode, view, type ColorModeId } from '../render/colorModes'
+import { colorModes, getColorMode, view, type ColorModeId, type RenderStyle } from '../render/colorModes'
 import { ControlPanel } from './ControlPanel'
 import { Hud } from './Hud'
 import { Legend } from './Legend'
@@ -10,6 +10,7 @@ export function App() {
   const hudRef = useRef<HTMLDivElement>(null)
   const controllerRef = useRef<SimController | null>(null)
   const [colorMode, setColorMode] = useState<ColorModeId>(view.colorMode)
+  const [renderStyle, setRenderStyle] = useState<RenderStyle>(view.style)
   const [paused, setPaused] = useState(false)
   const [brushMode, setBrushMode] = useState<BrushMode>(brush.mode)
 
@@ -38,6 +39,10 @@ export function App() {
     view.colorMode = id
     setColorMode(id)
   }
+  const changeRenderStyle = (style: RenderStyle) => {
+    view.style = style
+    setRenderStyle(style)
+  }
   const changeBrushMode = (mode: BrushMode) => {
     brush.mode = mode
     setBrushMode(mode)
@@ -47,7 +52,8 @@ export function App() {
     setPaused(!paused)
   }
 
-  // Keys 1–4 pick the colour mode, B cycles the brush mode, Space pauses. Ignored
+  // Number keys pick the colour mode, V toggles particles/water, B cycles the brush
+  // mode, Space pauses. Ignored
   // while a panel control has focus, so typing and native button/Space keep working.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -55,6 +61,7 @@ export function App() {
       if (target.closest('input, select, textarea, button') || e.metaKey || e.ctrlKey || e.altKey) return
       const mode = colorModes[Number(e.key) - 1]
       if (mode) changeColorMode(mode.id)
+      else if (e.code === 'KeyV') changeRenderStyle(renderStyle === 'water' ? 'particles' : 'water')
       else if (e.code === 'KeyB') changeBrushMode(BRUSH_MODES[(BRUSH_MODES.indexOf(brushMode) + 1) % BRUSH_MODES.length])
       else if (e.code === 'Space') {
         e.preventDefault()
@@ -75,6 +82,8 @@ export function App() {
           controller={() => controllerRef.current}
           colorMode={colorMode}
           onColorMode={changeColorMode}
+          renderStyle={renderStyle}
+          onRenderStyle={changeRenderStyle}
           paused={paused}
           onTogglePause={togglePause}
           brushMode={brushMode}

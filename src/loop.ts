@@ -114,7 +114,7 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
     )
     renderer.setArrow(mouse.active && mouse.kind === 'current' ? mouse.pos : null, mouse.arrow, mouse.sign)
     renderer.setObstacle(state.obstacle?.center ?? null, state.obstacle?.halfSize ?? [], state.obstacle?.angle ?? 0)
-    renderer.render()
+    renderer.render(view.style === 'water')
 
     frames++
     substepTotal += substeps

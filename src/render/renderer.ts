@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { DIM, type Domain } from '../sim/params'
+import { WaterSurface } from './waterSurface'
 
 // Pads a DIM-length vector out to a THREE.Vector3.
 function toVec3(v: number[]): THREE.Vector3 {
@@ -7,6 +8,7 @@ function toVec3(v: number[]): THREE.Vector3 {
 }
 
 const BRUSH_COLORS = { repel: 0xff9b54, attract: 0x54d6ff, current: 0x7ee787 }
+const BACKGROUND = 0x0d1117
 
 // One InstancedMesh of circles, mutated imperatively each frame.
 export class Renderer {
@@ -20,6 +22,7 @@ export class Renderer {
   private readonly brush: THREE.LineLoop<THREE.BufferGeometry, THREE.LineBasicMaterial>
   private readonly arrow: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>
   private readonly obstacle: THREE.LineLoop<THREE.BufferGeometry, THREE.LineBasicMaterial>
+  private readonly surface: WaterSurface
   private readonly resizeObserver: ResizeObserver
   private readonly container: HTMLElement
   private readonly domain: Domain
@@ -30,7 +33,7 @@ export class Renderer {
 
     this.gl = new THREE.WebGLRenderer({ antialias: true })
     this.gl.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    this.gl.setClearColor(0x0d1117)
+    this.gl.setClearColor(BACKGROUND)
     container.appendChild(this.gl.domElement)
 
     this.camera.position.set(0, 0, 10)
@@ -49,6 +52,7 @@ export class Renderer {
     const m = new THREE.Matrix4().makeScale(radius, radius, radius)
     for (let i = 0; i < count; i++) this.mesh.setMatrixAt(i, m)
     this.scene.add(this.mesh)
+    this.surface = new WaterSurface(this.mesh, BACKGROUND)
 
     const box = new THREE.Box3(toVec3(domain.min), toVec3(domain.max))
     this.bounds = new THREE.Box3Helper(box, 0x3a4552)
@@ -164,8 +168,19 @@ export class Renderer {
     ]
   }
 
-  render() {
+  // `water`: draw the fluid as a smooth surface (see waterSurface.ts) instead of
+  // dots; the overlays (box, brush, arrow, obstacle) are drawn on top either way.
+  render(water: boolean) {
+    if (!water) {
+      this.gl.render(this.scene, this.camera)
+      return
+    }
+    this.surface.render(this.gl, this.camera, this.mesh.count)
+    this.mesh.visible = false
+    this.gl.autoClear = false
     this.gl.render(this.scene, this.camera)
+    this.gl.autoClear = true
+    this.mesh.visible = true
   }
 
   // Frame the domain exactly (plus a small margin), letterboxing to the container aspect.
@@ -173,6 +188,7 @@ export class Renderer {
     const { clientWidth: w, clientHeight: h } = this.container
     if (w === 0 || h === 0) return
     this.gl.setSize(w, h)
+    this.surface.resize(this.gl)
 
     const { min, max } = this.domain
     const pad = 0.5
@@ -209,6 +225,7 @@ export class Renderer {
     this.arrow.material.dispose()
     this.obstacle.geometry.dispose()
     this.obstacle.material.dispose()
+    this.surface.dispose()
     this.gl.dispose()
     this.gl.domElement.remove()
   }
