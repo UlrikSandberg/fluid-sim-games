@@ -13,7 +13,14 @@ export interface Stats {
   paused: boolean
   brushRadius: number
   brushAccel: number // peak brush acceleration (depends on radius, so it changes with the wheel)
+  brushMode: BrushMode
 }
+
+export type BrushMode = 'repel' | 'attract'
+
+// Mutable brush settings, like `params`: the panel and keyboard write, the loop reads.
+// The mode is what a plain drag does; right drag or shift+drag does the opposite.
+export const brush = { mode: 'repel' as BrushMode }
 
 export interface SimController {
   reset(): void // rebuild particles and renderer from the current params
@@ -34,8 +41,7 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
   let pendingSteps = 0
 
   const mouse: MouseInput = { active: false, pos: new Array(DIM).fill(0), sign: 1 }
-  let hovering = false
-  const detachInput = attachMouse(container, mouse, (x, y) => renderer.screenToWorld(x, y), (h) => (hovering = h))
+  const input = attachMouse(container, mouse, (x, y) => renderer.screenToWorld(x, y))
 
   let accumulator = 0
   let last = performance.now()
@@ -45,6 +51,8 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
   let statsStart = last
 
   const frame = (now: number) => {
+    input.updateSign()
+
     // Clamp so a backgrounded tab doesn't come back with a huge backlog. The rAF
     // timestamp can precede the performance.now() taken at startup, hence max(0).
     accumulator += Math.min(Math.max((now - last) / 1000, 0), 0.1)
@@ -67,7 +75,7 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
     renderer.updatePositions(state.pos, state.n)
     writeColors(getColorMode(view.colorMode), state, params, renderer.colors)
     renderer.commitColors()
-    renderer.setBrush(hovering || mouse.active ? mouse.pos : null, params.brushRadius, mouse.active ? mouse.sign : 0)
+    renderer.setBrush(input.hovering || mouse.active ? mouse.pos : null, params.brushRadius, mouse.sign, mouse.active)
     renderer.render()
 
     frames++
@@ -81,6 +89,7 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
         paused,
         brushRadius: params.brushRadius,
         brushAccel: mouseAccel(params),
+        brushMode: brush.mode,
       })
       frames = 0
       substepTotal = 0
@@ -106,7 +115,7 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
     },
     dispose() {
       cancelAnimationFrame(raf)
-      detachInput()
+      input.detach()
       renderer.dispose()
     },
   }
@@ -115,16 +124,23 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
 const BRUSH_MIN = 0.5
 const BRUSH_MAX = 15
 
-// Left drag repels, right drag or shift+drag attracts, wheel resizes the brush.
-// Writes into `mouse`, which the loop hands to every step. Returns a detach function.
-function attachMouse(
-  el: HTMLElement,
-  mouse: MouseInput,
-  toWorld: (clientX: number, clientY: number) => number[],
-  setHovering: (hovering: boolean) => void,
-): () => void {
+// A plain drag applies the brush mode; right drag or shift+drag applies the
+// opposite. The wheel resizes the brush. Writes into `mouse`, which the loop
+// hands to every step; the loop calls updateSign() each frame so switching mode
+// or pressing shift mid-drag takes effect without moving the mouse.
+function attachMouse(el: HTMLElement, mouse: MouseInput, toWorld: (clientX: number, clientY: number) => number[]) {
   let dragButton = -1
+  let shift = false
+  const state = {
+    hovering: false,
+    updateSign() {
+      const modeSign = brush.mode === 'repel' ? 1 : -1
+      mouse.sign = dragButton === 2 || shift ? -modeSign : modeSign
+    },
+    detach: () => {},
+  }
   const track = (e: PointerEvent) => {
+    shift = e.shiftKey
     const w = toWorld(e.clientX, e.clientY)
     for (let d = 0; d < w.length; d++) mouse.pos[d] = w[d]
   }
@@ -133,14 +149,12 @@ function attachMouse(
     e.preventDefault()
     dragButton = e.button
     track(e)
-    mouse.sign = e.button === 2 || e.shiftKey ? -1 : 1
     mouse.active = true
     el.setPointerCapture(e.pointerId)
   }
   const move = (e: PointerEvent) => {
     track(e)
-    setHovering(true)
-    if (mouse.active && dragButton === 0) mouse.sign = e.shiftKey ? -1 : 1
+    state.hovering = true
   }
   const up = (e: PointerEvent) => {
     // pointercancel reports button −1, so it always ends the drag.
@@ -149,7 +163,8 @@ function attachMouse(
     dragButton = -1
     if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
   }
-  const leave = () => setHovering(false)
+  const leave = () => (state.hovering = false)
+  const shiftKey = (e: KeyboardEvent) => (shift = e.shiftKey)
   const wheel = (e: WheelEvent) => {
     e.preventDefault()
     const r = params.brushRadius * Math.exp(-e.deltaY * 0.002)
@@ -164,7 +179,9 @@ function attachMouse(
   el.addEventListener('pointerleave', leave)
   el.addEventListener('wheel', wheel, { passive: false })
   el.addEventListener('contextmenu', noMenu)
-  return () => {
+  window.addEventListener('keydown', shiftKey)
+  window.addEventListener('keyup', shiftKey)
+  state.detach = () => {
     el.removeEventListener('pointerdown', down)
     el.removeEventListener('pointermove', move)
     el.removeEventListener('pointerup', up)
@@ -172,7 +189,10 @@ function attachMouse(
     el.removeEventListener('pointerleave', leave)
     el.removeEventListener('wheel', wheel)
     el.removeEventListener('contextmenu', noMenu)
+    window.removeEventListener('keydown', shiftKey)
+    window.removeEventListener('keyup', shiftKey)
   }
+  return state
 }
 
 function fieldStats(s: SimState) {

@@ -2,7 +2,7 @@ import { useReducer, useState, type ReactNode } from 'react'
 import { cflDt, defaultParams, mouseSpeedCap, params, type Params } from '../sim/params'
 import { blockCapacity } from '../sim/sph'
 import { colorModes, type ColorModeId } from '../render/colorModes'
-import type { SimController } from '../loop'
+import type { BrushMode, SimController } from '../loop'
 
 // Fields only read when the particles are created; editing them marks a reset as pending.
 const INIT_KEYS = ['particleCount', 'spacing', 'seed'] as const
@@ -15,11 +15,13 @@ interface Props {
   onColorMode: (id: ColorModeId) => void
   paused: boolean
   onTogglePause: () => void
+  brushMode: BrushMode
+  onBrushMode: (mode: BrushMode) => void
 }
 
 // Writes straight into the shared mutable `params`; the loop picks changes up on
 // its next step. React re-renders only on input events, never per frame.
-export function ControlPanel({ controller, colorMode, onColorMode, paused, onTogglePause }: Props) {
+export function ControlPanel({ controller, colorMode, onColorMode, paused, onTogglePause, brushMode, onBrushMode }: Props) {
   const [, rerender] = useReducer((x: number) => x + 1, 0)
   const [applied, setApplied] = useState(snapshotInit)
 
@@ -99,6 +101,18 @@ export function ControlPanel({ controller, colorMode, onColorMode, paused, onTog
       </Section>
 
       <Section title="Mouse">
+        <div className="row">
+          <span>Drag</span>
+          <div className="toggle" role="radiogroup" title="B toggles">
+            {(['repel', 'attract'] as const).map((m) => (
+              <button key={m} role="radio" aria-checked={brushMode === m} className={brushMode === m ? `on ${m}` : undefined}
+                onClick={() => onBrushMode(m)}>
+                {m === 'repel' ? 'Repel' : 'Attract'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="note">B toggles · right/shift-drag does the opposite</p>
         <Slider label="Strength" value={params.mouseStrength} min={0} max={1} step={0.05}
           format={(v) => `${(v * 100).toFixed(0)}%`} onChange={(v) => update(() => (params.mouseStrength = v))} />
         <Slider label="Max speed" value={params.mouseMaxSpeed} min={1} max={40} step={1} format={(v) => v.toFixed(0)}

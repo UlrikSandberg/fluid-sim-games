@@ -19,8 +19,9 @@ npm run check -- 20 stiffness=8000 dt=0.003   # headless dam break with param ov
 
 | Input | Action |
 | --- | --- |
-| Left drag | Repel |
-| Right drag, or Shift + drag | Attract |
+| Left drag (or touch) | Apply the brush mode: repel or attract |
+| `B`, or the panel's Drag toggle | Switch brush mode |
+| Right drag, or Shift + drag | The opposite of the brush mode |
 | Mouse wheel | Brush radius |
 | `1`–`4` | Colour mode: density ρ/ρ₀, neighbour count, speed, pressure |
 | Space | Pause / resume |

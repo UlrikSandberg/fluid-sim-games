@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { startLoop, type SimController } from '../loop'
+import { brush, startLoop, type BrushMode, type SimController } from '../loop'
 import { colorModes, getColorMode, view, type ColorModeId } from '../render/colorModes'
 import { ControlPanel } from './ControlPanel'
 import { Hud } from './Hud'
@@ -11,6 +11,7 @@ export function App() {
   const controllerRef = useRef<SimController | null>(null)
   const [colorMode, setColorMode] = useState<ColorModeId>(view.colorMode)
   const [paused, setPaused] = useState(false)
+  const [brushMode, setBrushMode] = useState<BrushMode>(brush.mode)
 
   useEffect(() => {
     const host = canvasHostRef.current
@@ -21,7 +22,8 @@ export function App() {
           `${s.fps.toFixed(0)} fps · ${s.particles} particles · ` +
           (s.paused ? 'paused' : `${s.substeps.toFixed(1)} substeps/frame`) +
           `\nρ/ρ₀ avg ${s.densityAvg.toFixed(3)} · max ${s.densityMax.toFixed(3)} · neighbours avg ${s.neighborsAvg.toFixed(1)}` +
-          `\nbrush R ${s.brushRadius.toFixed(1)} · accel ${s.brushAccel.toFixed(0)} · drag repel · right/shift-drag attract · wheel resize`
+          `\nbrush ${s.brushMode} [B] · R ${s.brushRadius.toFixed(1)} · accel ${s.brushAccel.toFixed(0)}` +
+          ` · right/shift-drag: opposite · wheel: resize`
       }
     })
     controllerRef.current = controller
@@ -35,19 +37,24 @@ export function App() {
     view.colorMode = id
     setColorMode(id)
   }
+  const changeBrushMode = (mode: BrushMode) => {
+    brush.mode = mode
+    setBrushMode(mode)
+  }
   const togglePause = () => {
     controllerRef.current?.setPaused(!paused)
     setPaused(!paused)
   }
 
-  // Keys 1–4 pick the colour mode, Space pauses. Ignored while a panel control has
-  // focus, so typing and native button/Space behaviour keep working.
+  // Keys 1–4 pick the colour mode, B toggles the brush mode, Space pauses. Ignored
+  // while a panel control has focus, so typing and native button/Space keep working.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
       if (target.closest('input, select, textarea, button') || e.metaKey || e.ctrlKey || e.altKey) return
       const mode = colorModes[Number(e.key) - 1]
       if (mode) changeColorMode(mode.id)
+      else if (e.code === 'KeyB') changeBrushMode(brushMode === 'repel' ? 'attract' : 'repel')
       else if (e.code === 'Space') {
         e.preventDefault()
         togglePause()
@@ -69,6 +76,8 @@ export function App() {
           onColorMode={changeColorMode}
           paused={paused}
           onTogglePause={togglePause}
+          brushMode={brushMode}
+          onBrushMode={changeBrushMode}
         />
       </div>
     </div>

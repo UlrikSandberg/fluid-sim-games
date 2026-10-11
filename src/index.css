@@ -167,3 +167,34 @@ body,
 .note.warn {
   color: #e3b341;
 }
+
+.toggle {
+  grid-column: 2 / 4;
+  display: flex;
+}
+
+.toggle button {
+  flex: 1;
+  border-radius: 0;
+}
+
+.toggle button:first-child {
+  border-radius: 3px 0 0 3px;
+}
+
+.toggle button:last-child {
+  border-radius: 0 3px 3px 0;
+  border-left: none;
+}
+
+.panel .toggle button.on.repel {
+  background: #3d2614;
+  border-color: #ff9b54;
+  color: #ffb784;
+}
+
+.panel .toggle button.on.attract {
+  background: #12313b;
+  border-color: #54d6ff;
+  color: #8ee5ff;
+}

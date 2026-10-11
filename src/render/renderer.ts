@@ -85,13 +85,15 @@ export class Renderer {
   }
 
   // Shows the brush outline at `pos` (or hides it when null). Colour encodes the
-  // action: grey when hovering, orange when repelling, cyan when attracting.
-  setBrush(pos: number[] | null, radius: number, sign: number) {
+  // action, orange to repel and cyan to attract: faint while hovering (what a drag
+  // would do), solid while the brush is applied.
+  setBrush(pos: number[] | null, radius: number, sign: number, active: boolean) {
     this.brush.visible = pos !== null
     if (!pos) return
     this.brush.position.set(pos[0], pos[1], 0)
     this.brush.scale.set(radius, radius, 1)
-    this.brush.material.color.set(sign > 0 ? 0xff9b54 : sign < 0 ? 0x54d6ff : 0x8b949e)
+    this.brush.material.color.set(sign > 0 ? 0xff9b54 : 0x54d6ff)
+    this.brush.material.opacity = active ? 0.9 : 0.4
   }
 
   // Client (CSS pixel) coordinates → world coordinates on the z = 0 plane.
