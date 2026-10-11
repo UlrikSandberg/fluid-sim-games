@@ -6,6 +6,8 @@ function toVec3(v: number[]): THREE.Vector3 {
   return new THREE.Vector3(v[0] ?? 0, v[1] ?? 0, v[2] ?? 0)
 }
 
+const BRUSH_COLORS = { repel: 0xff9b54, attract: 0x54d6ff, current: 0x7ee787 }
+
 // One InstancedMesh of circles, mutated imperatively each frame.
 export class Renderer {
   private readonly gl: THREE.WebGLRenderer
@@ -16,6 +18,7 @@ export class Renderer {
   readonly colors: Float32Array
   private readonly bounds: THREE.Box3Helper
   private readonly brush: THREE.LineLoop<THREE.BufferGeometry, THREE.LineBasicMaterial>
+  private readonly arrow: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>
   private readonly resizeObserver: ResizeObserver
   private readonly container: HTMLElement
   private readonly domain: Domain
@@ -63,6 +66,14 @@ export class Renderer {
     this.brush.visible = false
     this.scene.add(this.brush)
 
+    // Current-mode arrow: shaft plus two arrowhead strokes (3 segments).
+    const arrowGeometry = new THREE.BufferGeometry()
+    arrowGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6 * 3), 3))
+    this.arrow = new THREE.LineSegments(arrowGeometry, new THREE.LineBasicMaterial({ color: BRUSH_COLORS.current }))
+    this.arrow.frustumCulled = false
+    this.arrow.visible = false
+    this.scene.add(this.arrow)
+
     this.resizeObserver = new ResizeObserver(() => this.resize())
     this.resizeObserver.observe(container)
     this.resize()
@@ -84,16 +95,38 @@ export class Renderer {
     this.mesh.instanceColor!.needsUpdate = true
   }
 
-  // Shows the brush outline at `pos` (or hides it when null). Colour encodes the
-  // action, orange to repel and cyan to attract: faint while hovering (what a drag
-  // would do), solid while the brush is applied.
-  setBrush(pos: number[] | null, radius: number, sign: number, active: boolean) {
+  // Shows the brush outline at `pos` (or hides it when null), coloured by what it
+  // does: faint while hovering (what a drag would do), solid while applied.
+  setBrush(pos: number[] | null, radius: number, kind: keyof typeof BRUSH_COLORS, active: boolean) {
     this.brush.visible = pos !== null
     if (!pos) return
     this.brush.position.set(pos[0], pos[1], 0)
     this.brush.scale.set(radius, radius, 1)
-    this.brush.material.color.set(sign > 0 ? 0xff9b54 : 0x54d6ff)
+    this.brush.material.color.set(BRUSH_COLORS[kind])
     this.brush.material.opacity = active ? 0.9 : 0.4
+  }
+
+  // Draws the current-mode arrow from `from` along `vec` (reversed when sign < 0),
+  // or hides it when `from` is null.
+  setArrow(from: number[] | null, vec: number[], sign: number) {
+    const len = Math.hypot(vec[0], vec[1])
+    this.arrow.visible = from !== null && len > 1e-6
+    if (!from || !this.arrow.visible) return
+    const ux = (sign * vec[0]) / len
+    const uy = (sign * vec[1]) / len
+    const tx = from[0] + ux * len
+    const ty = from[1] + uy * len
+    const head = Math.min(0.35 * len, 1.5)
+    const c = Math.cos(0.45)
+    const sn = Math.sin(0.45)
+    const pts = this.arrow.geometry.getAttribute('position') as THREE.BufferAttribute
+    pts.setXYZ(0, from[0], from[1], 1)
+    pts.setXYZ(1, tx, ty, 1)
+    pts.setXYZ(2, tx, ty, 1)
+    pts.setXYZ(3, tx - head * (ux * c - uy * sn), ty - head * (uy * c + ux * sn), 1)
+    pts.setXYZ(4, tx, ty, 1)
+    pts.setXYZ(5, tx - head * (ux * c + uy * sn), ty - head * (uy * c - ux * sn), 1)
+    pts.needsUpdate = true
   }
 
   // Client (CSS pixel) coordinates → world coordinates on the z = 0 plane.
@@ -149,6 +182,8 @@ export class Renderer {
     this.bounds.dispose()
     this.brush.geometry.dispose()
     this.brush.material.dispose()
+    this.arrow.geometry.dispose()
+    this.arrow.material.dispose()
     this.gl.dispose()
     this.gl.domElement.remove()
   }

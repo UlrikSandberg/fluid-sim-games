@@ -19,12 +19,16 @@ npm run check -- 20 stiffness=8000 dt=0.003   # headless dam break with param ov
 
 | Input | Action |
 | --- | --- |
-| Left drag (or touch) | Apply the brush mode: repel or attract |
-| `B`, or the panel's Drag toggle | Switch brush mode |
-| Right drag, or Shift + drag | The opposite of the brush mode |
+| Left drag (or touch) | Apply the brush mode: repel, attract, or current |
+| `B`, or the panel's Drag toggle | Cycle brush mode |
+| Right drag, or Shift + drag | The opposite of the brush mode (reverse flow in current mode) |
 | Mouse wheel | Brush radius |
 | `1`–`4` | Colour mode: density ρ/ρ₀, neighbour count, speed, pressure |
 | Space | Pause / resume |
+
+In **current** mode, pressing anchors the brush and dragging draws an arrow from
+the anchor. While held, fluid in the brush is driven along the arrow. A longer arrow
+gives a faster current, reaching full speed once it spans the brush diameter.
 
 The control panel edits solver parameters live without restarting the simulation.
 Particle count, spacing and seed apply on **Reset**; the button turns amber while
@@ -67,7 +71,8 @@ reads ρ/ρ₀ = 0.994 with 20 neighbours.
   acceleration is `strength · 0.15 · c_s² / R`, because compression under a steady
   push goes as `a·R/c_s²`. Brushed particles are also capped at Mach 0.25 and at the
   CFL limit. With a raw acceleration, full strength crushed the fluid to 3× rest
-  density.
+  density. Current mode blends velocities toward the arrow's target velocity at a
+  rate chosen so its peak acceleration matches the same bound.
 - **Determinism:** the `.ts` extensions in `src/sim` imports exist so Node can run the
   solver directly. `Math.pow` is avoided in the solver because engines don't guarantee
   bit-identical results.

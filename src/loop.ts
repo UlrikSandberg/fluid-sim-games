@@ -16,10 +16,12 @@ export interface Stats {
   brushMode: BrushMode
 }
 
-export type BrushMode = 'repel' | 'attract'
+export type BrushMode = 'repel' | 'attract' | 'current'
+export const BRUSH_MODES: readonly BrushMode[] = ['repel', 'attract', 'current']
 
 // Mutable brush settings, like `params`: the panel and keyboard write, the loop reads.
-// The mode is what a plain drag does; right drag or shift+drag does the opposite.
+// The mode is what a plain drag does; right drag or shift+drag does the opposite
+// (for 'current', the reverse direction).
 export const brush = { mode: 'repel' as BrushMode }
 
 export interface SimController {
@@ -40,7 +42,13 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
   let paused = false
   let pendingSteps = 0
 
-  const mouse: MouseInput = { active: false, pos: new Array(DIM).fill(0), sign: 1 }
+  const mouse: MouseInput = {
+    active: false,
+    kind: 'radial',
+    pos: new Array(DIM).fill(0),
+    sign: 1,
+    arrow: new Array(DIM).fill(0),
+  }
   const input = attachMouse(container, mouse, (x, y) => renderer.screenToWorld(x, y))
 
   let accumulator = 0
@@ -51,7 +59,7 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
   let statsStart = last
 
   const frame = (now: number) => {
-    input.updateSign()
+    input.update()
 
     // Clamp so a backgrounded tab doesn't come back with a huge backlog. The rAF
     // timestamp can precede the performance.now() taken at startup, hence max(0).
@@ -75,7 +83,13 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
     renderer.updatePositions(state.pos, state.n)
     writeColors(getColorMode(view.colorMode), state, params, renderer.colors)
     renderer.commitColors()
-    renderer.setBrush(input.hovering || mouse.active ? mouse.pos : null, params.brushRadius, mouse.sign, mouse.active)
+    renderer.setBrush(
+      input.hovering || mouse.active ? mouse.pos : null,
+      params.brushRadius,
+      mouse.kind === 'current' ? 'current' : mouse.sign > 0 ? 'repel' : 'attract',
+      mouse.active,
+    )
+    renderer.setArrow(mouse.active && mouse.kind === 'current' ? mouse.pos : null, mouse.arrow, mouse.sign)
     renderer.render()
 
     frames++
@@ -125,30 +139,40 @@ const BRUSH_MIN = 0.5
 const BRUSH_MAX = 15
 
 // A plain drag applies the brush mode; right drag or shift+drag applies the
-// opposite. The wheel resizes the brush. Writes into `mouse`, which the loop
-// hands to every step; the loop calls updateSign() each frame so switching mode
-// or pressing shift mid-drag takes effect without moving the mouse.
+// opposite. In 'current' mode the press point anchors the brush and the drag
+// draws the arrow from it. The wheel resizes the brush. Writes into `mouse`,
+// which the loop hands to every step; the loop calls update() each frame so
+// switching mode or pressing shift mid-drag takes effect without moving the mouse.
 function attachMouse(el: HTMLElement, mouse: MouseInput, toWorld: (clientX: number, clientY: number) => number[]) {
   let dragButton = -1
   let shift = false
+  const cursor = mouse.pos.slice()
+  const anchor = mouse.pos.slice()
   const state = {
     hovering: false,
-    updateSign() {
-      const modeSign = brush.mode === 'repel' ? 1 : -1
-      mouse.sign = dragButton === 2 || shift ? -modeSign : modeSign
+    update() {
+      const flip = dragButton === 2 || shift
+      mouse.kind = brush.mode === 'current' ? 'current' : 'radial'
+      mouse.sign = (flip ? -1 : 1) * (brush.mode === 'attract' ? -1 : 1)
+      const anchored = mouse.active && mouse.kind === 'current'
+      for (let d = 0; d < cursor.length; d++) {
+        mouse.pos[d] = anchored ? anchor[d] : cursor[d]
+        mouse.arrow[d] = anchored ? cursor[d] - anchor[d] : 0
+      }
     },
     detach: () => {},
   }
   const track = (e: PointerEvent) => {
     shift = e.shiftKey
     const w = toWorld(e.clientX, e.clientY)
-    for (let d = 0; d < w.length; d++) mouse.pos[d] = w[d]
+    for (let d = 0; d < w.length; d++) cursor[d] = w[d]
   }
   const down = (e: PointerEvent) => {
     if (e.button !== 0 && e.button !== 2) return
     e.preventDefault()
     dragButton = e.button
     track(e)
+    for (let d = 0; d < cursor.length; d++) anchor[d] = cursor[d]
     mouse.active = true
     el.setPointerCapture(e.pointerId)
   }

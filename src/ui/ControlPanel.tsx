@@ -2,7 +2,7 @@ import { useReducer, useState, type ReactNode } from 'react'
 import { cflDt, defaultParams, mouseSpeedCap, params, type Params } from '../sim/params'
 import { blockCapacity } from '../sim/sph'
 import { colorModes, type ColorModeId } from '../render/colorModes'
-import type { BrushMode, SimController } from '../loop'
+import { BRUSH_MODES, type BrushMode, type SimController } from '../loop'
 
 // Fields only read when the particles are created; editing them marks a reset as pending.
 const INIT_KEYS = ['particleCount', 'spacing', 'seed'] as const
@@ -103,16 +103,21 @@ export function ControlPanel({ controller, colorMode, onColorMode, paused, onTog
       <Section title="Mouse">
         <div className="row">
           <span>Drag</span>
-          <div className="toggle" role="radiogroup" title="B toggles">
-            {(['repel', 'attract'] as const).map((m) => (
+          <div className="toggle" role="radiogroup" title="B cycles">
+            {BRUSH_MODES.map((m) => (
               <button key={m} role="radio" aria-checked={brushMode === m} className={brushMode === m ? `on ${m}` : undefined}
                 onClick={() => onBrushMode(m)}>
-                {m === 'repel' ? 'Repel' : 'Attract'}
+                {m[0].toUpperCase() + m.slice(1)}
               </button>
             ))}
           </div>
         </div>
-        <p className="note">B toggles · right/shift-drag does the opposite</p>
+        <p className="note">
+          {brushMode === 'current'
+            ? 'press to anchor, drag to draw the flow · right/shift-drag reverses'
+            : 'right/shift-drag does the opposite'}{' '}
+          · B cycles
+        </p>
         <Slider label="Strength" value={params.mouseStrength} min={0} max={1} step={0.05}
           format={(v) => `${(v * 100).toFixed(0)}%`} onChange={(v) => update(() => (params.mouseStrength = v))} />
         <Slider label="Max speed" value={params.mouseMaxSpeed} min={1} max={40} step={1} format={(v) => v.toFixed(0)}

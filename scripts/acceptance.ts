@@ -3,8 +3,8 @@
 //   1. A dam break settles to a flat surface with bulk ρ/ρ₀ within ±5%.
 //   2. Neighbour count reads ~20 in the bulk.
 //   3. No particle ever leaves the domain (checked after every step).
-//   4. Full-strength mouse dragging (repel, then attract) does not blow up,
-//      and the fluid settles again afterwards.
+//   4. Full-strength mouse dragging (repel, attract, then a current pumped into a
+//      wall) does not blow up, and the fluid settles again afterwards.
 // Usage: node scripts/acceptance.ts
 import { DIM, defaultParams, type Params } from '../src/sim/params.ts'
 import { createState, step, type MouseInput, type SimState } from '../src/sim/sph.ts'
@@ -96,7 +96,9 @@ check(
 check('flat surface', spread <= 2.5 * p.spacing, `surface spread ${spread.toFixed(2)} (≤ ${(2.5 * p.spacing).toFixed(2)}, 2.5 spacings)`)
 check('neighbour count ~20', settled.nbrMedian >= 17 && settled.nbrMedian <= 23, `bulk median ${settled.nbrMedian}`)
 
-// 4: full-strength mouse, sweeping through the pool. Repel, then attract.
+// 4: full-strength mouse. Repel and attract sweeping through the pool, then a
+// current anchored mid-pool, pumping at full speed into the right wall while its
+// direction slowly swings up and down.
 p.mouseStrength = 1 // slider maximum
 p.mouseMaxSpeed = 40 // slider maximum; CFL still caps the effective value
 p.brushRadius = 6
@@ -104,8 +106,17 @@ const { min, max } = p.domain
 const cx = (min[0] + max[0]) / 2
 const sweep = (sign: number) => (t: number): MouseInput => ({
   active: true,
+  kind: 'radial',
   sign,
   pos: [cx + 0.4 * (max[0] - min[0]) * Math.sin(2 * t), 7 + 4 * Math.cos(2.6 * t)],
+  arrow: [0, 0],
+})
+const pump = (t: number): MouseInput => ({
+  active: true,
+  kind: 'current',
+  sign: 1,
+  pos: [cx, 6],
+  arrow: [3 * p.brushRadius * Math.cos(0.5 * Math.sin(t)), 3 * p.brushRadius * Math.sin(0.5 * Math.sin(t))],
 })
 const damBreakMaxSpeed = maxSpeedEver
 maxRhoEver = 0
@@ -114,6 +125,7 @@ spikeSamples = 0
 samples = 0
 run(s, 8, sweep(1))
 run(s, 8, sweep(-1))
+run(s, 8, pump)
 // "Doesn't blow up" means no divergence: everything stays finite, density spikes
 // are rare and brief (fast sweeps slam fluid into walls, where Phase 1 boundary
 // handling is weakest) with a hard ceiling, and speeds stay comparable to the

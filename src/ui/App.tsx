@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { brush, startLoop, type BrushMode, type SimController } from '../loop'
+import { BRUSH_MODES, brush, startLoop, type BrushMode, type SimController } from '../loop'
 import { colorModes, getColorMode, view, type ColorModeId } from '../render/colorModes'
 import { ControlPanel } from './ControlPanel'
 import { Hud } from './Hud'
@@ -46,7 +46,7 @@ export function App() {
     setPaused(!paused)
   }
 
-  // Keys 1–4 pick the colour mode, B toggles the brush mode, Space pauses. Ignored
+  // Keys 1–4 pick the colour mode, B cycles the brush mode, Space pauses. Ignored
   // while a panel control has focus, so typing and native button/Space keep working.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -54,7 +54,7 @@ export function App() {
       if (target.closest('input, select, textarea, button') || e.metaKey || e.ctrlKey || e.altKey) return
       const mode = colorModes[Number(e.key) - 1]
       if (mode) changeColorMode(mode.id)
-      else if (e.code === 'KeyB') changeBrushMode(brushMode === 'repel' ? 'attract' : 'repel')
+      else if (e.code === 'KeyB') changeBrushMode(BRUSH_MODES[(BRUSH_MODES.indexOf(brushMode) + 1) % BRUSH_MODES.length])
       else if (e.code === 'Space') {
         e.preventDefault()
         togglePause()

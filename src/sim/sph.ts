@@ -17,11 +17,15 @@ export interface SimState {
   grid: SpatialGrid
 }
 
-// Brush input for one step. `sign` is +1 to repel, −1 to attract.
+// Brush input for one step.
+//  - 'radial': push (sign +1) or pull (sign −1) around `pos`.
+//  - 'current': drive the fluid around `pos` along `arrow` (sign −1 reverses it).
 export interface MouseInput {
   active: boolean
-  pos: number[] // length DIM, world units
+  kind: 'radial' | 'current'
+  pos: number[] // brush centre, length DIM, world units
   sign: number
+  arrow: number[] // 'current' only: the drawn vector from `pos`, world units
 }
 
 export function createState(p: Params): SimState {
@@ -88,7 +92,10 @@ export function step(s: SimState, p: Params, mouse?: MouseInput) {
   const k = makeKernels(p.h)
   computeDensityPressure(s, p, k)
   computeAccelerations(s, p, k)
-  if (mouse?.active) applyMouse(s, p, mouse)
+  if (mouse?.active) {
+    if (mouse.kind === 'current') applyCurrent(s, p, mouse)
+    else applyMouse(s, p, mouse)
+  }
   integrate(s, p, k)
   resolveBoundaries(s, p)
 }
@@ -180,6 +187,38 @@ function applyMouse(s: SimState, p: Params, mouse: MouseInput) {
       const shrink = cap / Math.sqrt(v2)
       for (let d = 0; d < DIM; d++) vel[i * DIM + d] *= shrink
     }
+  }
+}
+
+const target = new Float64Array(DIM)
+
+// Drives particles inside the brush toward a target velocity along the drawn
+// arrow, blending v → v_target at a rate scaled by the falloff (1 − r/R). The
+// target speed is the brush speed cap once the arrow spans the brush diameter,
+// proportionally less for shorter arrows. The blend rate is chosen so the peak
+// acceleration (rate · cap) equals mouseAccel: the same stiffness-scaled bound
+// as push/pull, so a steady current can't crush fluid against a wall either.
+function applyCurrent(s: SimState, p: Params, mouse: MouseInput) {
+  const { n, pos, vel } = s
+  const R = p.brushRadius
+  const cap = mouseSpeedCap(p)
+  let len2 = 0
+  for (let d = 0; d < DIM; d++) len2 += mouse.arrow[d] * mouse.arrow[d]
+  if (len2 < 1e-12 || cap === 0) return
+  const len = Math.sqrt(len2)
+  const speed = cap * Math.min(1, len / (2 * R))
+  for (let d = 0; d < DIM; d++) target[d] = (mouse.sign * mouse.arrow[d] * speed) / len
+  const rateDt = (mouseAccel(p) / cap) * p.dt
+
+  for (let i = 0; i < n; i++) {
+    let r2 = 0
+    for (let d = 0; d < DIM; d++) {
+      const dx = pos[i * DIM + d] - mouse.pos[d]
+      r2 += dx * dx
+    }
+    if (r2 >= R * R) continue
+    const blend = Math.min(1, rateDt * (1 - Math.sqrt(r2) / R))
+    for (let d = 0; d < DIM; d++) vel[i * DIM + d] += blend * (target[d] - vel[i * DIM + d])
   }
 }
 
