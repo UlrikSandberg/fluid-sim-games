@@ -18,7 +18,7 @@ export interface SimState {
 }
 
 export function createState(p: Params): SimState {
-  const n = p.particleCount
+  const n = Math.min(p.particleCount, blockCapacity(p))
   const s: SimState = {
     n,
     mass: particleMass(p),
@@ -35,18 +35,31 @@ export function createState(p: Params): SimState {
   return s
 }
 
+// Lattice sites per axis that fit in the domain at the given spacing.
+function sitesPerAxis(p: Params): number[] {
+  const sites: number[] = []
+  for (let d = 0; d < DIM; d++) {
+    sites.push(Math.max(1, Math.floor((p.domain.max[d] - p.domain.min[d]) / p.spacing)))
+  }
+  return sites
+}
+
+// Most particles the initial block can hold without overlapping.
+export function blockCapacity(p: Params): number {
+  return sitesPerAxis(p).reduce((a, b) => a * b, 1)
+}
+
 // Lay particles out on a grid in a block anchored at the domain's min corner
-// (a dam break). Axis 0 is filled to `fill` of the domain width, then rows
-// stack along the remaining axes. A tiny seeded jitter breaks perfect symmetry.
+// (a dam break). Axis 0 spans `fill` of the domain width (wider if the other
+// axes can't hold the rest), then rows stack along the remaining axes. A tiny
+// seeded jitter breaks perfect symmetry.
 function seedBlock(s: SimState, p: Params) {
-  const { min, max } = p.domain
+  const { min } = p.domain
   const sp = p.spacing
   const fill = 0.6
-  const perAxis: number[] = []
-  for (let d = 0; d < DIM; d++) {
-    const extent = (max[d] - min[d]) * (d === 0 ? fill : 1)
-    perAxis.push(Math.max(1, Math.floor(extent / sp)))
-  }
+  const perAxis = sitesPerAxis(p)
+  const otherAxes = perAxis.slice(1).reduce((a, b) => a * b, 1)
+  perAxis[0] = Math.min(perAxis[0], Math.max(Math.floor(perAxis[0] * fill), Math.ceil(s.n / otherAxes)))
   const rand = mulberry32(p.seed)
   const jitter = 1e-3 * sp
   for (let i = 0; i < s.n; i++) {
@@ -89,16 +102,18 @@ function computeDensityPressure(s: SimState, p: Params, k: Kernels) {
   }
 }
 
-// Linear: p = k(ρ − ρ₀). Tait: p = B((ρ/ρ₀)^7 − 1), with B = stiffness.
-// Both clamped to ≥ 0 to avoid tensile clustering. The 7th power is written as
-// multiplications: Math.pow is not guaranteed bit-identical across JS engines.
+// Linear: p = k(ρ − ρ₀). Tait: p = B((ρ/ρ₀)^7 − 1) with B = ρ₀k/7, so both have
+// dp/dρ = k at rest (same c_s, same CFL limit) and Tait only differs by
+// stiffening under compression. Both clamped to ≥ 0 to avoid tensile clustering.
+// The 7th power is written as multiplications: Math.pow is not guaranteed
+// bit-identical across JS engines.
 function equationOfState(rho: number, p: Params): number {
   let pr: number
   if (p.useTait) {
     const x = rho / p.restDensity
     const x2 = x * x
     const x4 = x2 * x2
-    pr = p.stiffness * (x4 * x2 * x - 1)
+    pr = ((p.restDensity * p.stiffness) / 7) * (x4 * x2 * x - 1)
   } else {
     pr = p.stiffness * (rho - p.restDensity)
   }

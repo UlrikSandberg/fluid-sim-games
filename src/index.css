@@ -36,11 +36,19 @@ body,
   white-space: pre;
 }
 
-.legend {
+.side {
   position: absolute;
   top: 8px;
   right: 8px;
-  width: 220px;
+  bottom: 8px;
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none; /* let the canvas get input outside the panels */
+}
+
+.legend {
   padding: 6px 8px;
   font-size: 11px;
   background: rgb(0 0 0 / 0.5);
@@ -57,4 +65,99 @@ body,
 .legend-ticks {
   display: flex;
   justify-content: space-between;
+}
+
+.panel {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 8px;
+  font-size: 11px;
+  background: rgb(0 0 0 / 0.6);
+  border-radius: 4px;
+  pointer-events: auto;
+}
+
+.panel summary {
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.panel button,
+.panel select,
+.panel input {
+  font: inherit;
+  color: inherit;
+  background: #21262d;
+  border: 1px solid #3a4552;
+  border-radius: 3px;
+}
+
+.panel button {
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.panel button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.panel button.pending {
+  border-color: #d29922;
+  color: #e3b341;
+}
+
+.panel button.wide {
+  width: 100%;
+  margin-top: 6px;
+}
+
+.buttons {
+  display: flex;
+  gap: 4px;
+  margin: 6px 0;
+}
+
+.section {
+  margin: 6px 0 0;
+  padding: 2px 6px 6px;
+  border: 1px solid #30363d;
+  border-radius: 3px;
+}
+
+.section legend {
+  padding: 0 4px;
+  color: #8b949e;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 84px 1fr 52px;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.row select,
+.row input[type='number'] {
+  grid-column: 2 / 4;
+  min-width: 0;
+}
+
+.row input[type='range'] {
+  min-width: 0;
+  accent-color: #58a6ff;
+}
+
+.row output {
+  text-align: right;
+}
+
+.note {
+  margin: 2px 0 0 90px;
+  color: #8b949e;
+}
+
+.note.warn {
+  color: #e3b341;
 }
