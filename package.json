@@ -8,7 +8,10 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "check": "node scripts/check-sim.ts"
+    "check": "node scripts/check-sim.ts",
+    "test:determinism": "node scripts/determinism.ts",
+    "test:acceptance": "node scripts/acceptance.ts",
+    "test": "node scripts/determinism.ts && node scripts/acceptance.ts"
   },
   "dependencies": {
     "react": "^19.2.8",

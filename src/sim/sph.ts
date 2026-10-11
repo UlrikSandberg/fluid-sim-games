@@ -1,4 +1,4 @@
-import { DIM, particleMass, type Params } from './params.ts'
+import { DIM, mouseAccel, mouseSpeedCap, particleMass, particleRadius, type Params } from './params.ts'
 import { mulberry32 } from './rng.ts'
 import { makeKernels, poly6, spikyGradMag, type Kernels } from './kernels.ts'
 import { buildGrid, buildNeighbors, createGrid, type SpatialGrid } from './spatialHash.ts'
@@ -15,6 +15,13 @@ export interface SimState {
   pressure: Float32Array
   neighborCount: Uint16Array
   grid: SpatialGrid
+}
+
+// Brush input for one step. `sign` is +1 to repel, −1 to attract.
+export interface MouseInput {
+  active: boolean
+  pos: number[] // length DIM, world units
+  sign: number
 }
 
 export function createState(p: Params): SimState {
@@ -73,7 +80,7 @@ function seedBlock(s: SimState, p: Params) {
 }
 
 // One fixed-dt substep.
-export function step(s: SimState, p: Params) {
+export function step(s: SimState, p: Params, mouse?: MouseInput) {
   if (s.grid.cellSize !== p.h) s.grid = createGrid(p.domain, p.h, s.n)
   buildGrid(s.grid, s.pos, s.n)
   buildNeighbors(s.grid, s.pos, s.n, p.h)
@@ -81,6 +88,7 @@ export function step(s: SimState, p: Params) {
   const k = makeKernels(p.h)
   computeDensityPressure(s, p, k)
   computeAccelerations(s, p, k)
+  if (mouse?.active) applyMouse(s, p, mouse)
   integrate(s, p, k)
   resolveBoundaries(s, p)
 }
@@ -145,6 +153,36 @@ function computeAccelerations(s: SimState, p: Params, k: Kernels) {
   }
 }
 
+// Radial push/pull inside the brush, falloff (1 − r/R), applied as a velocity
+// impulse. The impulse is scaled to the fluid's stiffness (see mouseAccel) and
+// brushed particles are speed-capped (see mouseSpeedCap), so even full strength
+// can neither crush the fluid nor violate CFL.
+function applyMouse(s: SimState, p: Params, mouse: MouseInput) {
+  const { n, pos, vel } = s
+  const R = p.brushRadius
+  const cap = mouseSpeedCap(p)
+  const impulse = mouse.sign * mouseAccel(p) * p.dt
+  for (let i = 0; i < n; i++) {
+    let r2 = 0
+    for (let d = 0; d < DIM; d++) {
+      const dx = pos[i * DIM + d] - mouse.pos[d]
+      r2 += dx * dx
+    }
+    if (r2 >= R * R || r2 < 1e-12) continue
+    const r = Math.sqrt(r2)
+    const scale = (impulse * (1 - r / R)) / r
+    let v2 = 0
+    for (let d = 0; d < DIM; d++) {
+      vel[i * DIM + d] += scale * (pos[i * DIM + d] - mouse.pos[d])
+      v2 += vel[i * DIM + d] * vel[i * DIM + d]
+    }
+    if (v2 > cap * cap) {
+      const shrink = cap / Math.sqrt(v2)
+      for (let d = 0; d < DIM; d++) vel[i * DIM + d] *= shrink
+    }
+  }
+}
+
 // Symplectic Euler with XSPH velocity smoothing between the velocity and
 // position updates:  v_i += ε Σ_j (m/ρ_j)(v_j − v_i) W(r_ij).
 // XSPH reads the old velocities and writes a scratch buffer, so the result
@@ -175,19 +213,23 @@ function integrate(s: SimState, p: Params, k: Kernels) {
   for (let q = 0; q < n * DIM; q++) pos[q] += out[q] * dt
 }
 
-// Reflect the normal velocity with restitution and clamp back inside the box.
+// Reflect the normal velocity with restitution and clamp back inside the box,
+// inset by the particle radius so particles touch the wall rather than straddle it.
 function resolveBoundaries(s: SimState, p: Params) {
   const { n, pos, vel } = s
   const { min, max } = p.domain
+  const r = particleRadius(p)
   const e = p.restitution
   for (let i = 0; i < n; i++) {
     for (let d = 0; d < DIM; d++) {
       const k = i * DIM + d
-      if (pos[k] < min[d]) {
-        pos[k] = min[d]
+      const lo = min[d] + r
+      const hi = max[d] - r
+      if (pos[k] < lo) {
+        pos[k] = lo
         if (vel[k] < 0) vel[k] = -vel[k] * e
-      } else if (pos[k] > max[d]) {
-        pos[k] = max[d]
+      } else if (pos[k] > hi) {
+        pos[k] = hi
         if (vel[k] > 0) vel[k] = -vel[k] * e
       }
     }

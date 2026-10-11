@@ -1,8 +1,8 @@
 import * as THREE from 'three'
-import type { Params } from '../sim/params'
+import { DIM, type Params } from '../sim/params'
 import type { SimState } from '../sim/sph'
 
-export type ColorModeId = 'density'
+export type ColorModeId = 'density' | 'neighbors' | 'speed' | 'pressure'
 
 export interface ColorMode {
   id: ColorModeId
@@ -15,6 +15,11 @@ export interface ColorMode {
 // Diverging blue–grey–red (Moreland "cool to warm"), for quantities centred on a
 // reference value.
 const COOLWARM = ['#3b4cc0', '#8db0fe', '#dddddd', '#f49a7b', '#b40426']
+// Sequential maps. Their dark ends are lifted so low values stay visible
+// against the background.
+const VIRIDIS = ['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725']
+const ICE = ['#1d3b6e', '#1f6fb2', '#3fa7d6', '#9bdcf2', '#f2fbff']
+const MAGMA = ['#3b0f70', '#8c2981', '#de4968', '#fe9f6d', '#fcfdbf']
 
 export const colorModes: ColorMode[] = [
   {
@@ -23,6 +28,33 @@ export const colorModes: ColorMode[] = [
     range: [0.9, 1.1],
     stops: COOLWARM,
     scalar: (s, p, i) => s.density[i] / p.restDensity,
+  },
+  {
+    id: 'neighbors',
+    label: 'Neighbour count',
+    // Target is ~20 in 2D, ~30–40 in 3D; keep it mid-scale.
+    range: DIM === 2 ? [0, 40] : [0, 70],
+    stops: VIRIDIS,
+    scalar: (s, _p, i) => s.neighborCount[i],
+  },
+  {
+    id: 'speed',
+    label: 'Speed |v|',
+    range: [0, 20],
+    stops: ICE,
+    scalar: (s, _p, i) => {
+      let v2 = 0
+      for (let d = 0; d < DIM; d++) v2 += s.vel[i * DIM + d] ** 2
+      return Math.sqrt(v2)
+    },
+  },
+  {
+    id: 'pressure',
+    label: 'Pressure p',
+    // Upper end ≈ hydrostatic pressure at the bottom of a full box (ρ₀ g H).
+    range: [0, 300000],
+    stops: MAGMA,
+    scalar: (s, _p, i) => s.pressure[i],
   },
 ]
 

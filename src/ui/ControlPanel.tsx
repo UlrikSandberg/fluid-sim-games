@@ -1,5 +1,5 @@
 import { useReducer, useState, type ReactNode } from 'react'
-import { cflDt, defaultParams, params, type Params } from '../sim/params'
+import { cflDt, defaultParams, mouseSpeedCap, params, type Params } from '../sim/params'
 import { blockCapacity } from '../sim/sph'
 import { colorModes, type ColorModeId } from '../render/colorModes'
 import type { SimController } from '../loop'
@@ -13,13 +13,14 @@ interface Props {
   controller: () => SimController | null
   colorMode: ColorModeId
   onColorMode: (id: ColorModeId) => void
+  paused: boolean
+  onTogglePause: () => void
 }
 
 // Writes straight into the shared mutable `params`; the loop picks changes up on
 // its next step. React re-renders only on input events, never per frame.
-export function ControlPanel({ controller, colorMode, onColorMode }: Props) {
+export function ControlPanel({ controller, colorMode, onColorMode, paused, onTogglePause }: Props) {
   const [, rerender] = useReducer((x: number) => x + 1, 0)
-  const [paused, setPaused] = useState(false)
   const [applied, setApplied] = useState(snapshotInit)
 
   const update = (fn: () => void) => {
@@ -31,10 +32,6 @@ export function ControlPanel({ controller, colorMode, onColorMode }: Props) {
     controller()?.reset()
     setApplied(snapshotInit())
   }
-  const togglePause = () => {
-    controller()?.setPaused(!paused)
-    setPaused(!paused)
-  }
 
   const dtLimit = cflDt(params)
   const substepsNeeded = 1 / (60 * params.dt)
@@ -44,7 +41,9 @@ export function ControlPanel({ controller, colorMode, onColorMode }: Props) {
       <summary>Controls</summary>
 
       <div className="buttons">
-        <button onClick={togglePause}>{paused ? 'Resume' : 'Pause'}</button>
+        <button onClick={onTogglePause} title="Space">
+          {paused ? 'Resume' : 'Pause'}
+        </button>
         <button onClick={() => controller()?.stepOnce()} disabled={!paused}>
           Step
         </button>
@@ -57,9 +56,9 @@ export function ControlPanel({ controller, colorMode, onColorMode }: Props) {
         <label className="row">
           <span>Colour</span>
           <select value={colorMode} onChange={(e) => onColorMode(e.target.value as ColorModeId)}>
-            {colorModes.map((m) => (
+            {colorModes.map((m, i) => (
               <option key={m.id} value={m.id}>
-                {m.label}
+                {i + 1}. {m.label}
               </option>
             ))}
           </select>
@@ -97,6 +96,16 @@ export function ControlPanel({ controller, colorMode, onColorMode }: Props) {
         </p>
         <Slider label="Restitution" value={params.restitution} min={0} max={1} step={0.05} format={(v) => v.toFixed(2)}
           onChange={(v) => update(() => (params.restitution = v))} />
+      </Section>
+
+      <Section title="Mouse">
+        <Slider label="Strength" value={params.mouseStrength} min={0} max={1} step={0.05}
+          format={(v) => `${(v * 100).toFixed(0)}%`} onChange={(v) => update(() => (params.mouseStrength = v))} />
+        <Slider label="Max speed" value={params.mouseMaxSpeed} min={1} max={40} step={1} format={(v) => v.toFixed(0)}
+          onChange={(v) => update(() => (params.mouseMaxSpeed = v))} />
+        {mouseSpeedCap(params) < params.mouseMaxSpeed && (
+          <p className="note">capped to {mouseSpeedCap(params).toFixed(1)} by CFL at this dt</p>
+        )}
       </Section>
 
       <Section title="Initial state (on reset)">

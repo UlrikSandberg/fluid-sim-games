@@ -15,6 +15,7 @@ export class Renderer {
   // Per-instance linear RGB (stride 3). Fill it, then call commitColors().
   readonly colors: Float32Array
   private readonly bounds: THREE.Box3Helper
+  private readonly brush: THREE.LineLoop<THREE.BufferGeometry, THREE.LineBasicMaterial>
   private readonly resizeObserver: ResizeObserver
   private readonly container: HTMLElement
   private readonly domain: Domain
@@ -49,6 +50,19 @@ export class Renderer {
     this.bounds = new THREE.Box3Helper(box, 0x3a4552)
     this.scene.add(this.bounds)
 
+    // Unit circle outline, scaled and moved to show the mouse brush.
+    const brushPoints: THREE.Vector3[] = []
+    for (let k = 0; k < 64; k++) {
+      const a = (k / 64) * Math.PI * 2
+      brushPoints.push(new THREE.Vector3(Math.cos(a), Math.sin(a), 1))
+    }
+    this.brush = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints(brushPoints),
+      new THREE.LineBasicMaterial({ transparent: true, opacity: 0.7 }),
+    )
+    this.brush.visible = false
+    this.scene.add(this.brush)
+
     this.resizeObserver = new ResizeObserver(() => this.resize())
     this.resizeObserver.observe(container)
     this.resize()
@@ -68,6 +82,28 @@ export class Renderer {
 
   commitColors() {
     this.mesh.instanceColor!.needsUpdate = true
+  }
+
+  // Shows the brush outline at `pos` (or hides it when null). Colour encodes the
+  // action: grey when hovering, orange when repelling, cyan when attracting.
+  setBrush(pos: number[] | null, radius: number, sign: number) {
+    this.brush.visible = pos !== null
+    if (!pos) return
+    this.brush.position.set(pos[0], pos[1], 0)
+    this.brush.scale.set(radius, radius, 1)
+    this.brush.material.color.set(sign > 0 ? 0xff9b54 : sign < 0 ? 0x54d6ff : 0x8b949e)
+  }
+
+  // Client (CSS pixel) coordinates → world coordinates on the z = 0 plane.
+  // 2D only: in 3D this becomes a ray cast against the scene.
+  screenToWorld(clientX: number, clientY: number): number[] {
+    const rect = this.gl.domElement.getBoundingClientRect()
+    const u = (clientX - rect.left) / rect.width
+    const v = (clientY - rect.top) / rect.height
+    return [
+      this.camera.left + u * (this.camera.right - this.camera.left),
+      this.camera.top + v * (this.camera.bottom - this.camera.top),
+    ]
   }
 
   render() {
@@ -109,6 +145,8 @@ export class Renderer {
     ;(this.mesh.material as THREE.Material).dispose()
     this.mesh.dispose()
     this.bounds.dispose()
+    this.brush.geometry.dispose()
+    this.brush.material.dispose()
     this.gl.dispose()
     this.gl.domElement.remove()
   }

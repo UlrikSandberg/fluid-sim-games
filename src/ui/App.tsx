@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { startLoop, type SimController } from '../loop'
-import { getColorMode, view, type ColorModeId } from '../render/colorModes'
+import { colorModes, getColorMode, view, type ColorModeId } from '../render/colorModes'
 import { ControlPanel } from './ControlPanel'
 import { Hud } from './Hud'
 import { Legend } from './Legend'
@@ -10,6 +10,7 @@ export function App() {
   const hudRef = useRef<HTMLDivElement>(null)
   const controllerRef = useRef<SimController | null>(null)
   const [colorMode, setColorMode] = useState<ColorModeId>(view.colorMode)
+  const [paused, setPaused] = useState(false)
 
   useEffect(() => {
     const host = canvasHostRef.current
@@ -19,7 +20,8 @@ export function App() {
         hudRef.current.textContent =
           `${s.fps.toFixed(0)} fps · ${s.particles} particles · ` +
           (s.paused ? 'paused' : `${s.substeps.toFixed(1)} substeps/frame`) +
-          `\nρ/ρ₀ avg ${s.densityAvg.toFixed(3)} · max ${s.densityMax.toFixed(3)} · neighbours avg ${s.neighborsAvg.toFixed(1)}`
+          `\nρ/ρ₀ avg ${s.densityAvg.toFixed(3)} · max ${s.densityMax.toFixed(3)} · neighbours avg ${s.neighborsAvg.toFixed(1)}` +
+          `\nbrush R ${s.brushRadius.toFixed(1)} · accel ${s.brushAccel.toFixed(0)} · drag repel · right/shift-drag attract · wheel resize`
       }
     })
     controllerRef.current = controller
@@ -33,6 +35,27 @@ export function App() {
     view.colorMode = id
     setColorMode(id)
   }
+  const togglePause = () => {
+    controllerRef.current?.setPaused(!paused)
+    setPaused(!paused)
+  }
+
+  // Keys 1–4 pick the colour mode, Space pauses. Ignored while a panel control has
+  // focus, so typing and native button/Space behaviour keep working.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement
+      if (target.closest('input, select, textarea, button') || e.metaKey || e.ctrlKey || e.altKey) return
+      const mode = colorModes[Number(e.key) - 1]
+      if (mode) changeColorMode(mode.id)
+      else if (e.code === 'Space') {
+        e.preventDefault()
+        togglePause()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
 
   return (
     <div className="app">
@@ -40,7 +63,13 @@ export function App() {
       <Hud ref={hudRef} />
       <div className="side">
         <Legend mode={getColorMode(colorMode)} />
-        <ControlPanel controller={() => controllerRef.current} colorMode={colorMode} onColorMode={changeColorMode} />
+        <ControlPanel
+          controller={() => controllerRef.current}
+          colorMode={colorMode}
+          onColorMode={changeColorMode}
+          paused={paused}
+          onTogglePause={togglePause}
+        />
       </div>
     </div>
   )
