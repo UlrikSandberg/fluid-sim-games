@@ -1,5 +1,3 @@
-import { DIM } from './params.ts'
-
 // Normalization constants per dimension. This is the only place in the codebase
 // that knows about dimension-specific constants.
 //
@@ -23,8 +21,8 @@ export interface Kernels {
   spikyGradCoef: number
 }
 
-export function makeKernels(h: number): Kernels {
-  const c = COEFFS[DIM]
+export function makeKernels(h: number, dim: number): Kernels {
+  const c = COEFFS[dim]
   return { h, h2: h * h, poly6Coef: c.poly6(h), spikyGradCoef: c.spikyGrad(h) }
 }
 

@@ -77,7 +77,7 @@ export function Sandbox2D() {
       <div ref={canvasHostRef} className="canvas-host" />
       <Hud ref={hudRef} />
       <div className="side">
-        <Legend mode={getColorMode(colorMode)} />
+        <Legend mode={getColorMode(colorMode)} dim={2} />
         <ControlPanel
           controller={() => controllerRef.current}
           colorMode={colorMode}

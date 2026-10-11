@@ -1,4 +1,4 @@
-import { DIM, mouseAccel, params, particleRadius } from '../../sim/params'
+import { dimOf, mouseAccel, params, particleRadius } from '../../sim/params'
 import { createState, obstacleContains, setObstacle, step, type MouseInput, type SimState } from '../../sim/sph'
 import { Renderer } from '../../render/renderer'
 import { getColorMode, view, writeColors } from '../../render/colorModes'
@@ -57,7 +57,7 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
     drag: (target) => {
       if (!state.obstacle) return
       state.obstacle.grabbed = true
-      for (let d = 0; d < DIM; d++) state.obstacle.target[d] = target[d]
+      for (let d = 0; d < target.length; d++) state.obstacle.target[d] = target[d]
     },
     release: () => {
       if (state.obstacle) state.obstacle.grabbed = false
@@ -67,9 +67,9 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
   const mouse: MouseInput = {
     active: false,
     kind: 'radial',
-    pos: new Array(DIM).fill(0),
+    pos: new Array(dimOf(params)).fill(0),
     sign: 1,
-    arrow: new Array(DIM).fill(0),
+    arrow: new Array(dimOf(params)).fill(0),
   }
   const input = attachMouse(container, mouse, (x, y) => renderer.screenToWorld(x, y), obstacle)
 

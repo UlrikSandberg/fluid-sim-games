@@ -1,8 +1,12 @@
-// Spatial dimension. Everything downstream loops over components with stride DIM,
-// so switching to 3D should be a change here (plus a camera), not a rewrite.
-export const DIM = 2
+// Spatial dimension is not a global: a simulation's dimension is its domain's
+// (dimOf). Everything downstream loops over components with stride dim, so 2D and
+// 3D scenes share this solver, and nothing outside kernels.ts knows a
+// dimension-specific constant.
+export function dimOf(p: Params): number {
+  return p.domain.min.length
+}
 
-export type Vec = number[] // length DIM
+export type Vec = number[] // length dimOf(params)
 
 export interface Domain {
   min: Vec
@@ -63,9 +67,10 @@ export const defaultParams: Readonly<Params> = {
 // Single mutable params object. The control panel writes into it, the loop reads it.
 export const params: Params = structuredClone(defaultParams)
 
-// Mass is derived, never tuned: m = ρ₀ · spacing^DIM.
+// Mass is derived, never tuned: m = ρ₀ · spacing^dim.
 export function particleMass(p: Params): number {
-  return p.restDensity * p.spacing ** DIM
+  const dim = dimOf(p)
+  return p.restDensity * p.spacing ** dim
 }
 
 // Speed of sound at rest density. Both EOS variants are scaled so dp/dρ = k at ρ₀.

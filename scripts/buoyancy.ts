@@ -6,7 +6,7 @@
 // buoyancy directly;
 // it has to come out of the fluid's pressure forces on the body's boundary
 // particles. Usage: node scripts/buoyancy.ts
-import { DIM, defaultParams, particleRadius, type Params } from '../src/sim/params.ts'
+import { dimOf, defaultParams, particleRadius, type Params } from '../src/sim/params.ts'
 import { createState, setObstacle, step, type SimState } from '../src/sim/sph.ts'
 
 const SIZE = [6, 3]
@@ -17,6 +17,7 @@ const LIFT_SECONDS = 8
 const LIFT_MIN_RISE = 6
 
 const base: Params = { ...structuredClone(defaultParams), obstacleDynamic: true }
+const DIM = dimOf(base)
 const settled = createState(base)
 for (let k = 0; k < 40 / base.dt; k++) step(settled, base)
 

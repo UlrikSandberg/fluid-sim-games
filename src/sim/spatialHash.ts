@@ -1,4 +1,4 @@
-import { DIM, type Domain } from './params.ts'
+import type { Domain } from './params.ts'
 
 // Uniform grid over the (bounded) domain, padded by one cell on every side so
 // boundary particles just outside the walls get their own cells, with cell
@@ -7,8 +7,8 @@ import { DIM, type Domain } from './params.ts'
 // deterministic.
 //
 // Axis 0 has stride 1, so the three cells of a "row" along axis 0 are adjacent
-// in the sorted array. A neighbour query therefore scans 3^(DIM−1) contiguous
-// ranges instead of 3^DIM separate cells.
+// in the sorted array. A neighbour query therefore scans 3^(dim−1) contiguous
+// ranges instead of 3^dim separate cells.
 //
 // The grid holds all particles (fluid and boundary). Neighbours are stored as a
 // flat list of unique pairs (each pair once, not once per side), with the fluid
@@ -17,6 +17,7 @@ import { DIM, type Domain } from './params.ts'
 // visit each pair once and apply its contribution to both ends, which halves
 // their work compared to per-particle neighbour lists.
 export interface SpatialGrid {
+  dim: number
   cellSize: number
   min: number[]
   cellsPerAxis: Int32Array
@@ -24,8 +25,8 @@ export interface SpatialGrid {
   numCells: number
   cellStart: Int32Array // length numCells + 1
   sorted: Int32Array // particle indices grouped by cell
-  cellCoord: Int32Array // per-particle cell coordinates, stride DIM
-  rowOffsets: Int32Array // the 3^(DIM−1) offsets over axes 1..DIM−1, stride DIM−1
+  cellCoord: Int32Array // per-particle cell coordinates, stride dim
+  rowOffsets: Int32Array // the 3^(dim−1) offsets over axes 1..dim−1, stride dim−1
   pairI: Int32Array // grows as needed
   pairJ: Int32Array
   pairR2: Float64Array
@@ -33,27 +34,29 @@ export interface SpatialGrid {
 }
 
 export function createGrid(domain: Domain, cellSize: number, nFluid: number, nTotal: number): SpatialGrid {
-  const cellsPerAxis = new Int32Array(DIM)
-  const strides = new Int32Array(DIM)
+  const dim = domain.min.length
+  const cellsPerAxis = new Int32Array(dim)
+  const strides = new Int32Array(dim)
   let numCells = 1
-  for (let d = 0; d < DIM; d++) {
+  for (let d = 0; d < dim; d++) {
     cellsPerAxis[d] = Math.max(1, Math.ceil((domain.max[d] - domain.min[d] + 2 * cellSize) / cellSize))
     strides[d] = numCells
     numCells *= cellsPerAxis[d]
   }
 
-  const numRows = 3 ** (DIM - 1)
-  const rowOffsets = new Int32Array(numRows * (DIM - 1))
+  const numRows = 3 ** (dim - 1)
+  const rowOffsets = new Int32Array(numRows * (dim - 1))
   for (let o = 0; o < numRows; o++) {
     let rem = o
-    for (let d = 0; d < DIM - 1; d++) {
-      rowOffsets[o * (DIM - 1) + d] = (rem % 3) - 1
+    for (let d = 0; d < dim - 1; d++) {
+      rowOffsets[o * (dim - 1) + d] = (rem % 3) - 1
       rem = Math.floor(rem / 3)
     }
   }
 
   const capacity = nFluid * 16
   return {
+    dim: dim,
     cellSize,
     min: domain.min.map((v) => v - cellSize),
     cellsPerAxis,
@@ -61,7 +64,7 @@ export function createGrid(domain: Domain, cellSize: number, nFluid: number, nTo
     numCells,
     cellStart: new Int32Array(numCells + 1),
     sorted: new Int32Array(nTotal),
-    cellCoord: new Int32Array(nTotal * DIM),
+    cellCoord: new Int32Array(nTotal * dim),
     rowOffsets,
     pairI: new Int32Array(capacity),
     pairJ: new Int32Array(capacity),
@@ -72,6 +75,7 @@ export function createGrid(domain: Domain, cellSize: number, nFluid: number, nTo
 
 // Counting sort of particles into cells.
 export function buildGrid(g: SpatialGrid, pos: Float32Array, n: number) {
+  const dim = g.dim
   const { cellStart, sorted, cellCoord, cellsPerAxis, strides, numCells } = g
   const inv = 1 / g.cellSize
   cellStart.fill(0)
@@ -79,11 +83,11 @@ export function buildGrid(g: SpatialGrid, pos: Float32Array, n: number) {
   // Count particles per cell. cellStart[c + 1] holds the count for cell c.
   for (let i = 0; i < n; i++) {
     let cell = 0
-    for (let d = 0; d < DIM; d++) {
-      let c = Math.floor((pos[i * DIM + d] - g.min[d]) * inv)
+    for (let d = 0; d < dim; d++) {
+      let c = Math.floor((pos[i * dim + d] - g.min[d]) * inv)
       if (c < 0) c = 0
       else if (c >= cellsPerAxis[d]) c = cellsPerAxis[d] - 1
-      cellCoord[i * DIM + d] = c
+      cellCoord[i * dim + d] = c
       cell += c * strides[d]
     }
     cellStart[cell + 1]++
@@ -96,7 +100,7 @@ export function buildGrid(g: SpatialGrid, pos: Float32Array, n: number) {
   // then shift it back afterwards.
   for (let i = 0; i < n; i++) {
     let cell = 0
-    for (let d = 0; d < DIM; d++) cell += cellCoord[i * DIM + d] * strides[d]
+    for (let d = 0; d < dim; d++) cell += cellCoord[i * dim + d] * strides[d]
     sorted[cellStart[cell]++] = i
   }
   for (let c = numCells; c > 0; c--) cellStart[c] = cellStart[c - 1]
@@ -104,10 +108,10 @@ export function buildGrid(g: SpatialGrid, pos: Float32Array, n: number) {
 }
 
 // Squared distance between particles i and j. Unrolled per dimension: V8 does
-// not unroll a `for (d < DIM)` loop, and in the neighbour search (the hottest
+// not unroll a `for (d < dim)` loop, and in the neighbour search (the hottest
 // loop in the solver) that costs ~30%.
-function dist2(pos: Float32Array, i: number, j: number): number {
-  if (DIM === 2) {
+function dist2(pos: Float32Array, i: number, j: number, dim: number): number {
+  if (dim === 2) {
     const a = i * 2
     const b = j * 2
     const dx = pos[a] - pos[b]
@@ -139,30 +143,31 @@ export function buildPairs(g: SpatialGrid, pos: Float32Array, nFluid: number, h:
 // that come *later* in the sorted array, so every pair is found exactly once.
 // Since rows are laid out in order, the row below a particle is skipped outright
 // and its own row starts just after it: about half the candidate checks of a full
-// 3^DIM stencil. Every candidate is written unconditionally and `count` only
+// 3^dim stencil. Every candidate is written unconditionally and `count` only
 // advances for real pairs, avoiding a hard-to-predict branch; the fluid particle
 // is stored first. Returns false if the buffers overflow.
 function tryBuildPairs(g: SpatialGrid, pos: Float32Array, nFluid: number, h: number): boolean {
+  const dim = g.dim
   const { cellStart, sorted, cellCoord, cellsPerAxis, strides, rowOffsets, pairI, pairJ, pairR2 } = g
   const total = cellStart[g.numCells]
   const capacity = pairI.length
   const h2 = h * h
   const nx = cellsPerAxis[0]
-  const numRows = rowOffsets.length / (DIM - 1) || 1
+  const numRows = rowOffsets.length / (dim - 1) || 1
   let count = 0
 
   for (let k = 0; k < total; k++) {
     const a = sorted[k]
     const aFluid = a < nFluid
-    const cx = cellCoord[a * DIM]
+    const cx = cellCoord[a * dim]
     const x0 = cx > 0 ? cx - 1 : 0
     const x1 = cx < nx - 1 ? cx + 1 : nx - 1
 
     for (let o = 0; o < numRows; o++) {
       let base = 0
       let inside = true
-      for (let d = 1; d < DIM; d++) {
-        const c = cellCoord[a * DIM + d] + rowOffsets[o * (DIM - 1) + d - 1]
+      for (let d = 1; d < dim; d++) {
+        const c = cellCoord[a * dim + d] + rowOffsets[o * (dim - 1) + d - 1]
         if (c < 0 || c >= cellsPerAxis[d]) {
           inside = false
           break
@@ -177,7 +182,7 @@ function tryBuildPairs(g: SpatialGrid, pos: Float32Array, nFluid: number, h: num
       if (count + (to - from) > capacity) return false
       for (let q = from; q < to; q++) {
         const b = sorted[q]
-        const r2 = dist2(pos, a, b)
+        const r2 = dist2(pos, a, b, dim)
         pairI[count] = aFluid ? a : b
         pairJ[count] = aFluid ? b : a
         pairR2[count] = r2

@@ -6,10 +6,11 @@
 //   4. Full-strength mouse dragging (repel, attract, then a current pumped into a
 //      wall) does not blow up, and the fluid settles again afterwards.
 // Usage: node scripts/acceptance.ts
-import { DIM, defaultParams, type Params } from '../src/sim/params.ts'
+import { dimOf, defaultParams, type Params } from '../src/sim/params.ts'
 import { createState, step, type MouseInput, type SimState } from '../src/sim/sph.ts'
 
 const p: Params = structuredClone(defaultParams)
+const DIM = dimOf(p)
 const results: boolean[] = []
 const check = (name: string, ok: boolean, detail: string) => {
   results.push(ok)

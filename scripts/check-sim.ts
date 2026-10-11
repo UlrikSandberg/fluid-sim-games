@@ -1,13 +1,15 @@
 // Headless sanity check for the solver: kernel normalization, then a dam break
 // with periodic stats. Usage: node scripts/check-sim.ts [seconds] [key=value ...]
-import { DIM, params } from '../src/sim/params.ts'
+import { dimOf, params } from '../src/sim/params.ts'
 import { makeKernels, poly6 } from '../src/sim/kernels.ts'
 import { createState, step, type SimState } from '../src/sim/sph.ts'
+
+let DIM = dimOf(params)
 
 function checkKernels() {
   // Integrate over a DIM-cube [-h, h]^DIM on a fine grid; both kernels should integrate to 1.
   const h = params.h
-  const k = makeKernels(h)
+  const k = makeKernels(h, DIM)
   const spikyCoef = k.spikyGradCoef / 3 // W = (C/3)(h − r)³ has gradient magnitude C(h − r)²
   const res = DIM === 2 ? 1000 : 120
   const cell = (2 * h) / res
@@ -97,6 +99,7 @@ for (const arg of process.argv.slice(3)) {
   if (!(key in params)) throw new Error(`unknown param ${key}`)
   ;(params as unknown as Record<string, unknown>)[key] = JSON.parse(value)
 }
+DIM = dimOf(params)
 
 checkKernels()
 

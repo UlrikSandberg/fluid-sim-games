@@ -1,11 +1,11 @@
-import { colorModes, type ColorMode } from '../render/colorModes'
+import { colorModes, modeRange, type ColorMode } from '../render/colorModes'
 
 // Decimals follow the range's span, so a narrow range like 0.9–1.1 keeps its precision.
 const formatter = (span: number) => (v: number) =>
   Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(0)}k` : v.toFixed(span < 10 ? 2 : 0)
 
-export function Legend({ mode }: { mode: ColorMode }) {
-  const [lo, hi] = mode.range
+export function Legend({ mode, dim }: { mode: ColorMode; dim: number }) {
+  const [lo, hi] = modeRange(mode, dim)
   const fmt = formatter(hi - lo)
   return (
     <div className="legend">

@@ -1,8 +1,8 @@
 import * as THREE from 'three'
-import { DIM, type Domain } from '../sim/params'
+import type { Domain } from '../sim/params'
 import { WaterSurface } from './waterSurface'
 
-// Pads a DIM-length vector out to a THREE.Vector3.
+// Pads a 2- or 3-component vector out to a THREE.Vector3.
 function toVec3(v: number[]): THREE.Vector3 {
   return new THREE.Vector3(v[0] ?? 0, v[1] ?? 0, v[2] ?? 0)
 }
@@ -98,12 +98,13 @@ export class Renderer {
   }
 
   // Write translations straight into the column-major instance matrices
-  // (elements 12, 13, 14), looping over DIM components.
+  // (elements 12, 13, 14), looping over the domain's components.
   updatePositions(pos: Float32Array, n: number) {
     const arr = this.mesh.instanceMatrix.array as Float32Array
+    const dim = this.domain.min.length
     for (let i = 0; i < n; i++) {
       const o = i * 16 + 12
-      for (let d = 0; d < DIM; d++) arr[o + d] = pos[i * DIM + d]
+      for (let d = 0; d < dim; d++) arr[o + d] = pos[i * dim + d]
     }
     this.mesh.count = n
     this.mesh.instanceMatrix.needsUpdate = true
