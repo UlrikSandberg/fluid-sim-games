@@ -1,7 +1,7 @@
 import { DIM, mouseAccel, mouseSpeedCap, obstacleMass, particleMass, particleRadius, type Domain, type Params } from './params.ts'
 import { mulberry32 } from './rng.ts'
 import { makeKernels, poly6, spikyGradMag, type Kernels } from './kernels.ts'
-import { buildGrid, buildNeighbors, createGrid, type SpatialGrid } from './spatialHash.ts'
+import { buildGrid, buildPairs, createGrid, type SpatialGrid } from './spatialHash.ts'
 
 // Structure-of-arrays particle state. Vector fields have stride DIM.
 // Fluid particles are indices 0..n. Boundary particles follow at n..n+nb (walls
@@ -127,7 +127,7 @@ export function step(s: SimState, p: Params, mouse?: MouseInput) {
   const total = s.n + s.nb
   if (s.grid.cellSize !== p.h || s.grid.sorted.length !== total) s.grid = createGrid(p.domain, p.h, s.n, total)
   buildGrid(s.grid, s.pos, total)
-  buildNeighbors(s.grid, s.pos, s.n, p.h)
+  buildPairs(s.grid, s.pos, s.n, p.h)
 
   const k = makeKernels(p.h)
   computeDensityPressure(s, p, k)
@@ -490,21 +490,34 @@ function pushOutOfObstacle(s: SimState, p: Params, o: Obstacle) {
   }
 }
 
+let rhoScratch = new Float64Array(0)
+
 // ρ_i = Σ_j m_j W(r_ij) including self, with ψ_b standing in for m_j on boundary
-// neighbours, then pressure from the EOS.
+// neighbours, then pressure from the EOS. One visit per pair: a fluid–fluid pair
+// adds to both densities. Sums go through a Float64 scratch so precision matches
+// summing in a local.
 function computeDensityPressure(s: SimState, p: Params, k: Kernels) {
   const { n, mass, weight, density, pressure, neighborCount } = s
-  const { neighborStart, neighborEnd, neighbors, neighborDist2 } = s.grid
-  const self = mass * poly6(k, 0)
+  const { pairI, pairJ, pairR2, pairCount } = s.grid
+  if (rhoScratch.length < n) rhoScratch = new Float64Array(n)
+  const rho = rhoScratch
+  rho.fill(mass * poly6(k, 0), 0, n)
+  neighborCount.fill(0)
 
+  for (let q = 0; q < pairCount; q++) {
+    const i = pairI[q]
+    const j = pairJ[q]
+    const w = poly6(k, pairR2[q])
+    rho[i] += weight[j] * w
+    neighborCount[i]++
+    if (j < n) {
+      rho[j] += mass * w
+      neighborCount[j]++
+    }
+  }
   for (let i = 0; i < n; i++) {
-    let rho = self
-    const start = neighborStart[i]
-    const end = neighborEnd[i]
-    for (let q = start; q < end; q++) rho += weight[neighbors[q]] * poly6(k, neighborDist2[q])
-    density[i] = rho
-    neighborCount[i] = end - start
-    pressure[i] = equationOfState(rho, p)
+    density[i] = rho[i]
+    pressure[i] = equationOfState(rho[i], p)
   }
 }
 
@@ -533,25 +546,34 @@ function equationOfState(rho: number, p: Params): number {
 // body (−m_i a_ib at x_b), which is where buoyancy and form drag come from.
 function computeAccelerations(s: SimState, p: Params, k: Kernels) {
   const { n, pos, acc, mass, weight, density, pressure } = s
-  const { neighborStart, neighborEnd, neighbors, neighborDist2 } = s.grid
+  const { pairI, pairJ, pairR2, pairCount } = s.grid
   const o = s.obstacle
   const bodyStart = n + s.nWall
 
   for (let i = 0; i < n; i++) {
     for (let d = 0; d < DIM; d++) acc[i * DIM + d] = p.gravity[d]
+  }
 
-    const pi = pressure[i]
+  for (let q = 0; q < pairCount; q++) {
+    const i = pairI[q]
+    const j = pairJ[q]
+    const r2 = pairR2[q]
+    if (r2 < 1e-12) continue // coincident particles: direction undefined
+    const r = Math.sqrt(r2)
+    const grad = spikyGradMag(k, r) / r
     const rhoi = density[i]
-    for (let q = neighborStart[i], end = neighborEnd[i]; q < end; q++) {
-      const j = neighbors[q]
-      const r2 = neighborDist2[q]
-      if (r2 < 1e-12) continue // coincident particles: direction undefined
-      const r = Math.sqrt(r2)
-      const shared = j < n ? (mass * (pi + pressure[j])) / (2 * density[j]) : (weight[j] * pi) / rhoi
-      const scale = (shared * spikyGradMag(k, r)) / (r * rhoi)
+    if (j < n) {
+      // Equal masses make this pair term antisymmetric: m (p_i + p_j)/(2 ρ_i ρ_j)
+      // is the same seen from either side, so compute once, apply ±.
+      const scale = ((mass * (pressure[i] + pressure[j])) / (2 * rhoi * density[j])) * grad
       for (let d = 0; d < DIM; d++) {
-        acc[i * DIM + d] += scale * (pos[i * DIM + d] - pos[j * DIM + d])
+        const f = scale * (pos[i * DIM + d] - pos[j * DIM + d])
+        acc[i * DIM + d] += f
+        acc[j * DIM + d] -= f
       }
+    } else {
+      const scale = ((weight[j] * pressure[i]) / (rhoi * rhoi)) * grad
+      for (let d = 0; d < DIM; d++) acc[i * DIM + d] += scale * (pos[i * DIM + d] - pos[j * DIM + d])
       if (o && j >= bodyStart) {
         const fx = -mass * scale * (pos[i * DIM] - pos[j * DIM])
         const fy = -mass * scale * (pos[i * DIM + 1] - pos[j * DIM + 1])
@@ -635,7 +657,7 @@ function applyCurrent(s: SimState, p: Params, mouse: MouseInput) {
 // halving how fast a sunk body made light could lift off.
 function integrate(s: SimState, p: Params, k: Kernels) {
   const { n, pos, acc, mass, weight, density } = s
-  const { neighborStart, neighborEnd, neighbors, neighborDist2 } = s.grid
+  const { pairI, pairJ, pairR2, pairCount } = s.grid
   const o = s.obstacle
   const bodyStart = n + s.nWall
   const dt = p.dt
@@ -644,28 +666,36 @@ function integrate(s: SimState, p: Params, k: Kernels) {
   const out = s.velScratch
 
   for (let q = 0; q < n * DIM; q++) vel[q] += acc[q] * dt
+  out.set(vel.subarray(0, (n + s.nb) * DIM))
 
-  for (let i = 0; i < n; i++) {
-    for (let d = 0; d < DIM; d++) out[i * DIM + d] = vel[i * DIM + d]
-    for (let q = neighborStart[i], end = neighborEnd[i]; q < end; q++) {
-      const j = neighbors[q]
-      if (j >= n && j < bodyStart) continue // free-slip walls
-      const w = (eps * weight[j] * poly6(k, neighborDist2[q])) / density[j]
+  for (let q = 0; q < pairCount; q++) {
+    const i = pairI[q]
+    const j = pairJ[q]
+    if (j >= n && j < bodyStart) continue // free-slip walls
+    const w = eps * poly6(k, pairR2[q])
+    if (j < n) {
+      // v_i += ε (m/ρ_j)(v_j − v_i) W and v_j += ε (m/ρ_i)(v_i − v_j) W.
+      const wi = (w * mass) / density[j]
+      const wj = (w * mass) / density[i]
       for (let d = 0; d < DIM; d++) {
-        out[i * DIM + d] += w * (vel[j * DIM + d] - vel[i * DIM + d])
+        const dv = vel[j * DIM + d] - vel[i * DIM + d]
+        out[i * DIM + d] += wi * dv
+        out[j * DIM + d] -= wj * dv
       }
+    } else {
+      const wi = (w * weight[j]) / density[j]
+      for (let d = 0; d < DIM; d++) out[i * DIM + d] += wi * (vel[j * DIM + d] - vel[i * DIM + d])
       // The obstacle drags fluid along (or holds it back); react that momentum
       // change onto the body as skin friction, so a current can carry it.
-      if (o && j >= bodyStart) {
-        const fx = (-mass * w * (vel[j * DIM] - vel[i * DIM])) / dt
-        const fy = (-mass * w * (vel[j * DIM + 1] - vel[i * DIM + 1])) / dt
+      if (o) {
+        const fx = (-mass * wi * (vel[j * DIM] - vel[i * DIM])) / dt
+        const fy = (-mass * wi * (vel[j * DIM + 1] - vel[i * DIM + 1])) / dt
         o.force[0] += fx
         o.force[1] += fy
         o.torque += (pos[j * DIM] - o.center[0]) * fy - (pos[j * DIM + 1] - o.center[1]) * fx
       }
     }
   }
-  out.set(vel.subarray(n * DIM, (n + s.nb) * DIM), n * DIM)
   s.vel = out
   s.velScratch = vel
 

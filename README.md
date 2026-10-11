@@ -84,7 +84,7 @@ reads ρ/ρ₀ = 0.994 with 20 neighbours.
 
 | Criterion | Status |
 | --- | --- |
-| 4000 particles at 60 fps | **Not verified on target hardware.** About 2 ms per step in Node, at ~4.2 steps per 60 fps frame, so ~8.5 ms of sim per frame on an Apple-silicon laptop. Half of that is the neighbour search. Check the HUD on a mid-range laptop. |
+| 4000 particles at 60 fps | **Not verified on target hardware.** About 1.35 ms per step in Node, at ~4.2 steps per 60 fps frame, so ~5.7 ms of sim per frame on an Apple-silicon laptop. Half of that is the neighbour search. Check the HUD on a mid-range laptop. |
 | Settles flat, bulk ρ/ρ₀ within ±5% | Pass. Bulk mean 1.023, 98% of bulk particles within ±5%, surface spread 0.55 after 40 s. |
 | No particle leaves the domain | Pass. Checked after every step through the dam break, the mouse stress test and the resettle. |
 | Neighbour count ~20 in the bulk | Pass. Bulk median 18. |
@@ -116,5 +116,9 @@ reads ρ/ρ₀ = 0.994 with 20 neighbours.
   (the floating body keeps it) doubled how fast fluid flows back into that gap.
   A sunk box made light now rises about 13 units in 8 s. A short lag remains; that
   part is real (water has to flow in sideways under a wide box before it can lift).
-- **Performance headroom is thin.** The next levers are processing each pair once
-  instead of twice, or Position Based Fluids, which allows much larger timesteps.
+- **Performance headroom is thin.** Neighbours are a flat list of unique pairs,
+  found by scanning only forward in the sorted grid, and each solver pass visits a
+  pair once and updates both ends. That took a step from 2.1 to 1.35 ms (1.55×).
+  The pair search is now about half the step; the remaining waste is wall
+  particles scanning each other, which a separate static wall grid would remove.
+  Beyond that: Position Based Fluids for much larger timesteps.

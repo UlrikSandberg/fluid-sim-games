@@ -10,10 +10,12 @@ import { DIM, type Domain } from './params.ts'
 // in the sorted array. A neighbour query therefore scans 3^(DIM−1) contiguous
 // ranges instead of 3^DIM separate cells.
 //
-// The grid holds all particles (fluid and boundary), but neighbour lists are only
-// built for the fluid ones, indices 0..nFluid. The neighbours of i (excluding i
-// itself) are neighbors[neighborStart[i] .. neighborEnd[i]), with the matching
-// squared distances in neighborDist2.
+// The grid holds all particles (fluid and boundary). Neighbours are stored as a
+// flat list of unique pairs (each pair once, not once per side), with the fluid
+// particle first: pairI[k] < nFluid, pairJ[k] fluid or boundary, pairR2[k] the
+// squared distance. Boundary–boundary pairs are never stored. The solver passes
+// visit each pair once and apply its contribution to both ends, which halves
+// their work compared to per-particle neighbour lists.
 export interface SpatialGrid {
   cellSize: number
   min: number[]
@@ -24,10 +26,10 @@ export interface SpatialGrid {
   sorted: Int32Array // particle indices grouped by cell
   cellCoord: Int32Array // per-particle cell coordinates, stride DIM
   rowOffsets: Int32Array // the 3^(DIM−1) offsets over axes 1..DIM−1, stride DIM−1
-  neighborStart: Int32Array
-  neighborEnd: Int32Array
-  neighbors: Int32Array // grows as needed
-  neighborDist2: Float64Array // grows with neighbors
+  pairI: Int32Array // grows as needed
+  pairJ: Int32Array
+  pairR2: Float64Array
+  pairCount: number
 }
 
 export function createGrid(domain: Domain, cellSize: number, nFluid: number, nTotal: number): SpatialGrid {
@@ -50,7 +52,7 @@ export function createGrid(domain: Domain, cellSize: number, nFluid: number, nTo
     }
   }
 
-  const capacity = nFluid * 32
+  const capacity = nFluid * 16
   return {
     cellSize,
     min: domain.min.map((v) => v - cellSize),
@@ -61,10 +63,10 @@ export function createGrid(domain: Domain, cellSize: number, nFluid: number, nTo
     sorted: new Int32Array(nTotal),
     cellCoord: new Int32Array(nTotal * DIM),
     rowOffsets,
-    neighborStart: new Int32Array(nFluid),
-    neighborEnd: new Int32Array(nFluid),
-    neighbors: new Int32Array(capacity),
-    neighborDist2: new Float64Array(capacity),
+    pairI: new Int32Array(capacity),
+    pairJ: new Int32Array(capacity),
+    pairR2: new Float64Array(capacity),
+    pairCount: 0,
   }
 }
 
@@ -120,37 +122,39 @@ function dist2(pos: Float32Array, i: number, j: number): number {
   return dx * dx + dy * dy + dz * dz
 }
 
-// Builds neighbour lists for the fluid particles i < n (all j ≠ i, fluid or
-// boundary, with |x_i − x_j| < h).
-// If the list buffers are too small, grow them and rebuild from scratch; that
-// keeps the buffers fixed inside the hot loop, which V8 optimizes much better.
-export function buildNeighbors(g: SpatialGrid, pos: Float32Array, n: number, h: number) {
-  while (!tryBuildNeighbors(g, pos, n, h)) {
-    const capacity = g.neighbors.length * 2
-    g.neighbors = new Int32Array(capacity)
-    g.neighborDist2 = new Float64Array(capacity)
+// Builds the unique pair list: every fluid–fluid and fluid–boundary pair with
+// |x_i − x_j| < h, once. If the buffers are too small, grow them and rebuild from
+// scratch; that keeps the buffers fixed inside the hot loop, which V8 optimizes
+// much better.
+export function buildPairs(g: SpatialGrid, pos: Float32Array, nFluid: number, h: number) {
+  while (!tryBuildPairs(g, pos, nFluid, h)) {
+    const capacity = g.pairI.length * 2
+    g.pairI = new Int32Array(capacity)
+    g.pairJ = new Int32Array(capacity)
+    g.pairR2 = new Float64Array(capacity)
   }
 }
 
-// Particles are visited in cell order for memory locality. Every candidate is
-// written unconditionally and `count` only advances for real neighbours, which
-// avoids a hard-to-predict branch. Returns false if the buffers overflow.
-function tryBuildNeighbors(g: SpatialGrid, pos: Float32Array, n: number, h: number): boolean {
-  const { cellStart, sorted, cellCoord, cellsPerAxis, strides, rowOffsets, neighborStart, neighborEnd } = g
+// Walks the particles in sorted (cell) order and, for each, only scans candidates
+// that come *later* in the sorted array, so every pair is found exactly once.
+// Since rows are laid out in order, the row below a particle is skipped outright
+// and its own row starts just after it: about half the candidate checks of a full
+// 3^DIM stencil. Every candidate is written unconditionally and `count` only
+// advances for real pairs, avoiding a hard-to-predict branch; the fluid particle
+// is stored first. Returns false if the buffers overflow.
+function tryBuildPairs(g: SpatialGrid, pos: Float32Array, nFluid: number, h: number): boolean {
+  const { cellStart, sorted, cellCoord, cellsPerAxis, strides, rowOffsets, pairI, pairJ, pairR2 } = g
   const total = cellStart[g.numCells]
-  const list = g.neighbors
-  const dist = g.neighborDist2
-  const capacity = list.length
+  const capacity = pairI.length
   const h2 = h * h
   const nx = cellsPerAxis[0]
   const numRows = rowOffsets.length / (DIM - 1) || 1
   let count = 0
 
   for (let k = 0; k < total; k++) {
-    const i = sorted[k]
-    if (i >= n) continue
-    neighborStart[i] = count
-    const cx = cellCoord[i * DIM]
+    const a = sorted[k]
+    const aFluid = a < nFluid
+    const cx = cellCoord[a * DIM]
     const x0 = cx > 0 ? cx - 1 : 0
     const x1 = cx < nx - 1 ? cx + 1 : nx - 1
 
@@ -158,7 +162,7 @@ function tryBuildNeighbors(g: SpatialGrid, pos: Float32Array, n: number, h: numb
       let base = 0
       let inside = true
       for (let d = 1; d < DIM; d++) {
-        const c = cellCoord[i * DIM + d] + rowOffsets[o * (DIM - 1) + d - 1]
+        const c = cellCoord[a * DIM + d] + rowOffsets[o * (DIM - 1) + d - 1]
         if (c < 0 || c >= cellsPerAxis[d]) {
           inside = false
           break
@@ -167,18 +171,20 @@ function tryBuildNeighbors(g: SpatialGrid, pos: Float32Array, n: number, h: numb
       }
       if (!inside) continue
 
-      const from = cellStart[base + x0]
       const to = cellStart[base + x1 + 1]
+      if (to <= k + 1) continue // the whole range sorts at or before a
+      const from = Math.max(cellStart[base + x0], k + 1)
       if (count + (to - from) > capacity) return false
       for (let q = from; q < to; q++) {
-        const j = sorted[q]
-        const r2 = dist2(pos, i, j)
-        list[count] = j
-        dist[count] = r2
-        count += r2 < h2 && j !== i ? 1 : 0
+        const b = sorted[q]
+        const r2 = dist2(pos, a, b)
+        pairI[count] = aFluid ? a : b
+        pairJ[count] = aFluid ? b : a
+        pairR2[count] = r2
+        count += r2 < h2 && (aFluid || b < nFluid) ? 1 : 0
       }
     }
-    neighborEnd[i] = count
   }
+  g.pairCount = count
   return true
 }
