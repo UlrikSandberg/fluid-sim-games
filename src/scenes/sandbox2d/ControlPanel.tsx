@@ -1,8 +1,8 @@
 import { useReducer, useState, type ReactNode } from 'react'
-import { cflDt, defaultParams, mouseSpeedCap, params, type Params } from '../sim/params'
-import { blockCapacity } from '../sim/sph'
-import { colorModes, type ColorModeId, type RenderStyle } from '../render/colorModes'
-import { BRUSH_MODES, type BrushMode, type SimController } from '../loop'
+import { cflDt, defaultParams, mouseSpeedCap, params, type Params } from '../../sim/params'
+import { blockCapacity } from '../../sim/sph'
+import { colorModes, type ColorModeId, type RenderStyle } from '../../render/colorModes'
+import { BRUSH_MODES, type BrushMode, type SimController } from './loop'
 
 // Fields only read when the particles are created; editing them marks a reset as pending.
 const INIT_KEYS = ['particleCount', 'spacing', 'seed'] as const

@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { BRUSH_MODES, brush, startLoop, type BrushMode, type SimController } from '../loop'
-import { colorModes, getColorMode, view, type ColorModeId, type RenderStyle } from '../render/colorModes'
+import { BRUSH_MODES, brush, startLoop, type BrushMode, type SimController } from './loop'
+import { colorModes, getColorMode, view, type ColorModeId, type RenderStyle } from '../../render/colorModes'
 import { ControlPanel } from './ControlPanel'
-import { Hud } from './Hud'
-import { Legend } from './Legend'
+import { Hud } from '../../ui/Hud'
+import { Legend } from '../../ui/Legend'
 
-export function App() {
+export function Sandbox2D() {
   const canvasHostRef = useRef<HTMLDivElement>(null)
   const hudRef = useRef<HTMLDivElement>(null)
   const controllerRef = useRef<SimController | null>(null)

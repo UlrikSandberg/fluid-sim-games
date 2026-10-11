@@ -9,7 +9,7 @@ parameter change (`DIM` in `src/sim/params.ts`), not a rewrite.
 
 ```sh
 npm install
-npm run dev            # http://localhost:5173
+npm run dev            # http://localhost:5173 (start screen; the sandbox is #/2d)
 npm run build          # typecheck + static build in dist/
 npm test               # determinism, acceptance and buoyancy checks (~3 min)
 npm run check -- 20 stiffness=8000 dt=0.003   # headless dam break with param overrides
@@ -41,16 +41,18 @@ those changes are pending.
 ## Layout
 
 ```text
+src/App.tsx    hash router: start screen at #/, each scene at its own route
+src/scenes/    registry.ts (the scene list), Home.tsx, Coming3D.tsx (placeholder)
+  sandbox2d/   the 2D sandbox: Sandbox2D.tsx, ControlPanel.tsx, loop.ts
 src/sim/       solver: plain TypeScript over typed arrays, no DOM, runs in Node
   params.ts      DIM, the mutable params object, derived values (mass, CFL, brush caps)
   kernels.ts     Poly6 + Spiky; the only place with dimension-specific constants
-  spatialHash.ts counting-sort cell grid, deterministic neighbour lists
-  sph.ts         state arrays and step()
+  spatialHash.ts counting-sort cell grid, deterministic unique-pair list
+  sph.ts         state arrays, boundary particles, the obstacle body, and step()
 src/render/    three.js: one InstancedMesh, orthographic camera, colour modes,
                waterSurface.ts (metaball field + threshold pass)
-src/ui/        React: control panel, HUD, legend; never re-renders per frame
-src/loop.ts    fixed-timestep loop, mouse input, glue between sim and renderer
-scripts/       determinism.ts, acceptance.ts, check-sim.ts (tuning)
+src/ui/        shared React pieces: HUD, legend
+scripts/       determinism.ts, acceptance.ts, buoyancy.ts, check-sim.ts (tuning)
 ```
 
 ## Phase 1 notes

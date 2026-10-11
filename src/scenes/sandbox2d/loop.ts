@@ -1,7 +1,7 @@
-import { DIM, mouseAccel, params, particleRadius } from './sim/params'
-import { createState, obstacleContains, setObstacle, step, type MouseInput, type SimState } from './sim/sph'
-import { Renderer } from './render/renderer'
-import { getColorMode, view, writeColors } from './render/colorModes'
+import { DIM, mouseAccel, params, particleRadius } from '../../sim/params'
+import { createState, obstacleContains, setObstacle, step, type MouseInput, type SimState } from '../../sim/sph'
+import { Renderer } from '../../render/renderer'
+import { getColorMode, view, writeColors } from '../../render/colorModes'
 
 export interface Stats {
   fps: number
