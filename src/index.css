@@ -26,6 +26,10 @@ body,
   display: block;
 }
 
+.canvas-3d {
+  cursor: grab;
+}
+
 .hud {
   position: absolute;
   top: 8px;

@@ -1,9 +1,15 @@
 # Duck Game: SPH fluid sandbox
 
 The foundation for a 3D duck-racing game in which ducks float down a river driven by a
-real fluid simulation, used as a verifiably fair randomizer. **Phase 1** is a 2D
-weakly-compressible SPH sandbox in a box. It is written so that moving to 3D is a
-parameter change (`DIM` in `src/sim/params.ts`), not a rewrite.
+real fluid simulation, used as a verifiably fair randomizer. One weakly-compressible
+SPH solver drives two scenes, picked from a start screen:
+
+- **2D Sandbox** (`#/2d`): a side-view tank with mouse forces, a floating rigid body
+  and water rendering.
+- **3D Fluid** (`#/3d`): the same solver in a 3D tank with an orbit camera.
+
+A simulation's dimension is its domain's (`dimOf(params)`), so 3D was a preset plus a
+renderer, not a rewrite.
 
 ## Running
 
@@ -11,11 +17,12 @@ parameter change (`DIM` in `src/sim/params.ts`), not a rewrite.
 npm install
 npm run dev            # http://localhost:5173 (start screen; the sandbox is #/2d)
 npm run build          # typecheck + static build in dist/
-npm test               # determinism, acceptance and buoyancy checks (~3 min)
+npm test               # determinism, acceptance, buoyancy and 3D checks (~4 min)
 npm run check -- 20 stiffness=8000 dt=0.003   # headless dam break with param overrides
+npm run check -- --3d 10                      # the same, with the 3D preset
 ```
 
-## Controls
+## Controls (2D sandbox)
 
 | Input | Action |
 | --- | --- |
@@ -38,21 +45,37 @@ The control panel edits solver parameters live without restarting the simulation
 Particle count, spacing and seed apply on **Reset**; the button turns amber while
 those changes are pending.
 
+## 3D Fluid scene
+
+Drag to orbit, right-drag to pan, wheel to zoom; `1`–`5` colour modes, Space pauses.
+The preset (`defaultParams3D`) uses spacing 0.5·h, which gives ~32 neighbours in 3D,
+the usual 30–40 target (2D's 0.4·h would give ~64). A 3D step costs ~0.9 µs per
+particle on one CPU thread, so the default of 4000 particles in a 16×10×8 tank is
+what fits 60 fps. `npm run test:3d` checks the 3D kernel constants, settling
+(bulk ρ/ρ₀ 1.006), neighbours (median 32), the domain and determinism.
+
+Not in 3D yet: mouse forces (need ray picking into the tank), floating bodies (the
+rigid body uses a single rotation angle), the water surface renderer (3D screen-space
+fluid needs depth smoothing), and enough speed for river-sized particle counts (Web
+Workers / WebGPU, or Position Based Fluids for bigger timesteps).
+
 ## Layout
 
 ```text
 src/App.tsx    hash router: start screen at #/, each scene at its own route
-src/scenes/    registry.ts (the scene list), Home.tsx, Coming3D.tsx (placeholder)
+src/scenes/    registry.ts (the scene list), Home.tsx
   sandbox2d/   the 2D sandbox: Sandbox2D.tsx, ControlPanel.tsx, loop.ts
+  fluid3d/     the 3D scene: Fluid3D.tsx (with its panel), loop.ts
 src/sim/       solver: plain TypeScript over typed arrays, no DOM, runs in Node
-  params.ts      DIM, the mutable params object, derived values (mass, CFL, brush caps)
+  params.ts      2D and 3D presets, dimOf, derived values (mass, CFL, brush caps)
   kernels.ts     Poly6 + Spiky; the only place with dimension-specific constants
-  spatialHash.ts counting-sort cell grid, deterministic unique-pair list
+  spatialHash.ts counting-sort cell grids (fluid, boundary), unique-pair list
   sph.ts         state arrays, boundary particles, the obstacle body, and step()
-src/render/    three.js: one InstancedMesh, orthographic camera, colour modes,
-               waterSurface.ts (metaball field + threshold pass)
-src/ui/        shared React pieces: HUD, legend
-scripts/       determinism.ts, acceptance.ts, buoyancy.ts, check-sim.ts (tuning)
+src/render/    renderer.ts (2D, orthographic), renderer3d.ts (perspective, orbit),
+               colour modes, waterSurface.ts (metaball field + threshold pass)
+src/ui/        shared React pieces: HUD, legend, panel controls
+scripts/       determinism.ts, acceptance.ts, buoyancy.ts, acceptance3d.ts,
+               check-sim.ts (tuning)
 ```
 
 ## Phase 1 notes

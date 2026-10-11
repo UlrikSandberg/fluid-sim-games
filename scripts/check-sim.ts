@@ -1,6 +1,6 @@
 // Headless sanity check for the solver: kernel normalization, then a dam break
-// with periodic stats. Usage: node scripts/check-sim.ts [seconds] [key=value ...]
-import { dimOf, params } from '../src/sim/params.ts'
+// with periodic stats. Usage: node scripts/check-sim.ts [--3d] [seconds] [key=value ...]
+import { defaultParams3D, dimOf, params } from '../src/sim/params.ts'
 import { makeKernels, poly6 } from '../src/sim/kernels.ts'
 import { createState, step, type SimState } from '../src/sim/sph.ts'
 
@@ -71,9 +71,9 @@ function report(s: SimState, t: number, msPerStep: number) {
     }
   }
 
-  // Surface flatness: spread of the highest particle per column (DIM=2 only).
+  // Surface flatness: spread of the highest particle per column along x.
   let flat = ''
-  if (DIM === 2) {
+  {
     const cols = 40
     const w = (params.domain.max[0] - params.domain.min[0]) / cols
     const top = new Float64Array(cols).fill(-Infinity)
@@ -93,8 +93,14 @@ function report(s: SimState, t: number, msPerStep: number) {
   )
 }
 
+const args = process.argv.slice(2)
+if (args[0] === '--3d') {
+  Object.assign(params, structuredClone(defaultParams3D))
+  args.shift()
+}
+
 // Overrides as key=value, e.g. `stiffness=4000 dt=0.004 useTait=true`.
-for (const arg of process.argv.slice(3)) {
+for (const arg of args.slice(1)) {
   const [key, value] = arg.split('=')
   if (!(key in params)) throw new Error(`unknown param ${key}`)
   ;(params as unknown as Record<string, unknown>)[key] = JSON.parse(value)
@@ -103,7 +109,7 @@ DIM = dimOf(params)
 
 checkKernels()
 
-const seconds = Number(process.argv[2] ?? 10)
+const seconds = Number(args[0] ?? 10)
 const steps = Math.round(seconds / params.dt)
 const reportEvery = Math.round(1 / params.dt)
 const s = createState(params)

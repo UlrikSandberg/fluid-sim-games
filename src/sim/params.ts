@@ -67,6 +67,21 @@ export const defaultParams: Readonly<Params> = {
 // Single mutable params object. The control panel writes into it, the loop reads it.
 export const params: Params = structuredClone(defaultParams)
 
+// 3D preset: same fluid, one more axis. spacing = 0.5·h gives ~33 neighbours in
+// 3D, the usual target (0.4·h, right for 2D, would give ~64). The domain's length
+// is what makes this a 3D simulation (dimOf).
+export const defaultParams3D: Readonly<Params> = {
+  ...defaultParams,
+  spacing: 0.5,
+  gravity: [0, -9.8, 0],
+  // Sized for real time on one CPU thread: a 3D step costs ~0.87 µs per particle,
+  // and 60 fps needs ~4 steps per frame, so ~4000 particles; this tank holds them
+  // about 4 deep once they settle.
+  domain: { min: [0, 0, 0], max: [16, 10, 8] },
+  particleCount: 4000,
+  obstacleSize: [4, 2, 2],
+}
+
 // Mass is derived, never tuned: m = ρ₀ · spacing^dim.
 export function particleMass(p: Params): number {
   const dim = dimOf(p)
