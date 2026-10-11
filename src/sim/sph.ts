@@ -1,7 +1,7 @@
 import { dimOf, mouseAccel, mouseSpeedCap, obstacleMass, particleMass, particleRadius, type Domain, type Params } from './params.ts'
 import { mulberry32 } from './rng.ts'
 import { makeKernels, poly6, spikyGradMag, type Kernels } from './kernels.ts'
-import { buildGrid, buildPairs, createGrid, type SpatialGrid } from './spatialHash.ts'
+import { buildGrid, buildPairs, createGrid, stencilSums, type SpatialGrid } from './spatialHash.ts'
 
 // Structure-of-arrays particle state. Vector fields have stride dim.
 // Fluid particles are indices 0..n. Boundary particles follow at n..n+nb (walls
@@ -21,7 +21,9 @@ export interface SimState {
   density: Float32Array // boundary entries stay at ρ₀
   pressure: Float32Array // fluid only
   neighborCount: Uint16Array // fluid only
-  grid: SpatialGrid
+  grid: SpatialGrid // fluid particles, rebuilt every step
+  bgrid: SpatialGrid // boundary particles; static walls only need it rebuilt when stale
+  bgridStale: boolean
   obstacle: Obstacle | null
   boundaryH: number // h the boundary layers and ψ were built for
 }
@@ -78,6 +80,8 @@ export function createState(p: Params): SimState {
     pressure: new Float32Array(n),
     neighborCount: new Uint16Array(n),
     grid: createGrid(p.domain, p.h, n, n),
+    bgrid: createGrid(p.domain, p.h, 0, 0),
+    bgridStale: true,
     obstacle: null,
     boundaryH: 0,
   }
@@ -103,8 +107,10 @@ export function blockCapacity(p: Params): number {
 
 // Lay particles out on a grid in a block anchored at the domain's min corner
 // (a dam break). Axis 0 spans `fill` of the domain width (wider if the other
-// axes can't hold the rest), then rows stack along the remaining axes. A tiny
-// seeded jitter breaks perfect symmetry.
+// axes can't hold the rest); the other horizontal axes fill completely, and the
+// vertical axis (the one gravity points along) fills last, so in 3D the block is
+// a slab across the floor's depth rather than a wall. A tiny seeded jitter
+// breaks perfect symmetry.
 function seedBlock(s: SimState, p: Params) {
   const dim = s.dim
   const { min } = p.domain
@@ -113,11 +119,16 @@ function seedBlock(s: SimState, p: Params) {
   const perAxis = sitesPerAxis(p)
   const otherAxes = perAxis.slice(1).reduce((a, b) => a * b, 1)
   perAxis[0] = Math.min(perAxis[0], Math.max(Math.floor(perAxis[0] * fill), Math.ceil(s.n / otherAxes)))
+  let up = 0
+  for (let d = 1; d < dim; d++) if (Math.abs(p.gravity[d]) > Math.abs(p.gravity[up])) up = d
+  const order = [0]
+  for (let d = 1; d < dim; d++) if (d !== up) order.push(d)
+  if (up !== 0) order.push(up)
   const rand = mulberry32(p.seed)
   const jitter = 1e-3 * sp
   for (let i = 0; i < s.n; i++) {
     let idx = i
-    for (let d = 0; d < dim; d++) {
+    for (const d of order) {
       const k = idx % perAxis[d]
       idx = Math.floor(idx / perAxis[d])
       s.pos[i * dim + d] = min[d] + sp * (k + 0.5) + (rand() - 0.5) * jitter
@@ -129,10 +140,16 @@ function seedBlock(s: SimState, p: Params) {
 export function step(s: SimState, p: Params, mouse?: MouseInput) {
   if (s.boundaryH !== p.h) buildBoundary(s, p)
   if (s.obstacle) advanceObstacle(s, p, s.obstacle)
-  const total = s.n + s.nb
-  if (s.grid.cellSize !== p.h || s.grid.sorted.length !== total) s.grid = createGrid(p.domain, p.h, s.n, total)
-  buildGrid(s.grid, s.pos, total)
-  buildPairs(s.grid, s.pos, s.n, p.h)
+  if (s.grid.cellSize !== p.h || s.grid.sorted.length !== s.n) s.grid = createGrid(p.domain, p.h, s.n, s.n)
+  buildGrid(s.grid, s.pos, s.n)
+  // Boundary particles follow the fluid in pos. Walls never move, so their grid
+  // is only rebuilt when the boundary was regenerated or an obstacle is moving.
+  const bpos = s.pos.subarray(s.n * s.dim)
+  if (s.bgridStale || s.obstacle) {
+    buildGrid(s.bgrid, bpos, s.nb)
+    s.bgridStale = false
+  }
+  buildPairs(s.grid, s.pos, s.n, s.bgrid, bpos, p.h)
 
   const k = makeKernels(p.h, s.dim)
   computeDensityPressure(s, p, k)
@@ -203,6 +220,8 @@ function buildBoundary(s: SimState, p: Params) {
   s.nb = nb
   s.nWall = nWall
   s.boundaryH = p.h
+  s.bgrid = createGrid(p.domain, p.h, 0, nb)
+  s.bgridStale = true
   if (obs && s.obstacle) {
     // ψ depends only on relative positions, so the body-frame offsets will do.
     boundaryWeights(obs.pos, obs.spacing, k, p.restDensity, s.weight, n + nWall)
@@ -297,18 +316,23 @@ function boundaryWeights(
   const dim = spacing.length
   const full = latticeKernelSum(k, spacing)
   const m = x.length / dim
+  if (m === 0) return
+  // Sum over a grid of the body's own particles: O(m) rather than all pairs,
+  // which matters for 3D walls (~10⁴ particles).
+  const pts = Float32Array.from(x)
+  const min = new Array<number>(dim).fill(Infinity)
+  const max = new Array<number>(dim).fill(-Infinity)
   for (let b = 0; b < m; b++) {
-    let delta = 0
-    for (let c = 0; c < m; c++) {
-      let r2 = 0
-      for (let d = 0; d < dim; d++) {
-        const dx = x[b * dim + d] - x[c * dim + d]
-        r2 += dx * dx
-      }
-      delta += poly6(k, r2)
+    for (let d = 0; d < dim; d++) {
+      min[d] = Math.min(min[d], pts[b * dim + d])
+      max[d] = Math.max(max[d], pts[b * dim + d])
     }
-    out[offset + b] = restDensity / Math.max(delta, full)
   }
+  const g = createGrid({ min, max }, k.h, 0, m)
+  buildGrid(g, pts, m)
+  const delta = new Float64Array(m)
+  stencilSums(g, pts, m, (r2) => poly6(k, r2), delta)
+  for (let b = 0; b < m; b++) out[offset + b] = restDensity / Math.max(delta[b], full)
 }
 
 // Σ W over an infinite lattice with the given per-axis spacing, centred on a site.

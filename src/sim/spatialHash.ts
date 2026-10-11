@@ -10,7 +10,12 @@ import type { Domain } from './params.ts'
 // in the sorted array. A neighbour query therefore scans 3^(dim−1) contiguous
 // ranges instead of 3^dim separate cells.
 //
-// The grid holds all particles (fluid and boundary). Neighbours are stored as a
+// Fluid and boundary particles live in separate grids with the same cell layout:
+// the fluid grid is rebuilt every step, the boundary grid only when boundary
+// particles move. Fluid particles scan both; boundary particles never scan, so no
+// time goes to boundary–boundary candidates (in 3D, walls outnumber the fluid).
+//
+// Neighbours are stored as a
 // flat list of unique pairs (each pair once, not once per side), with the fluid
 // particle first: pairI[k] < nFluid, pairJ[k] fluid or boundary, pairR2[k] the
 // squared distance. Boundary–boundary pairs are never stored. The solver passes
@@ -107,31 +112,64 @@ export function buildGrid(g: SpatialGrid, pos: Float32Array, n: number) {
   cellStart[0] = 0
 }
 
-// Squared distance between particles i and j. Unrolled per dimension: V8 does
-// not unroll a `for (d < dim)` loop, and in the neighbour search (the hottest
-// loop in the solver) that costs ~30%.
-function dist2(pos: Float32Array, i: number, j: number, dim: number): number {
+
+// For each of the m particles in `g`, Σ_j f(r²_ij) over every particle j of the
+// same grid within its 3^dim cell stencil, itself included. Used to compute
+// boundary weights ψ; it runs when boundaries are rebuilt, not every step.
+export function stencilSums(g: SpatialGrid, pos: Float32Array, m: number, f: (r2: number) => number, out: Float64Array) {
+  const dim = g.dim
+  const { cellStart, sorted, cellCoord, cellsPerAxis, strides, rowOffsets } = g
+  const nx = cellsPerAxis[0]
+  const numRows = rowOffsets.length / (dim - 1) || 1
+  for (let a = 0; a < m; a++) {
+    const cx = cellCoord[a * dim]
+    const x0 = cx > 0 ? cx - 1 : 0
+    const x1 = cx < nx - 1 ? cx + 1 : nx - 1
+    let sum = 0
+    for (let o = 0; o < numRows; o++) {
+      let base = 0
+      let inside = true
+      for (let d = 1; d < dim; d++) {
+        const c = cellCoord[a * dim + d] + rowOffsets[o * (dim - 1) + d - 1]
+        if (c < 0 || c >= cellsPerAxis[d]) {
+          inside = false
+          break
+        }
+        base += c * strides[d]
+      }
+      if (!inside) continue
+      for (let q = cellStart[base + x0], to = cellStart[base + x1 + 1]; q < to; q++) {
+        sum += f(dist2(pos, a, pos, sorted[q], dim))
+      }
+    }
+    out[a] = sum
+  }
+}
+
+// Squared distance between particle i of `a` and particle j of `b` (positions
+// with stride dim). Unrolled per dimension: V8 does not unroll a `for (d < dim)`
+// loop, and in the neighbour search (the hottest loop in the solver) that costs ~30%.
+function dist2(a: Float32Array, i: number, b: Float32Array, j: number, dim: number): number {
   if (dim === 2) {
-    const a = i * 2
-    const b = j * 2
-    const dx = pos[a] - pos[b]
-    const dy = pos[a + 1] - pos[b + 1]
+    const dx = a[i * 2] - b[j * 2]
+    const dy = a[i * 2 + 1] - b[j * 2 + 1]
     return dx * dx + dy * dy
   }
-  const a = i * 3
-  const b = j * 3
-  const dx = pos[a] - pos[b]
-  const dy = pos[a + 1] - pos[b + 1]
-  const dz = pos[a + 2] - pos[b + 2]
+  const dx = a[i * 3] - b[j * 3]
+  const dy = a[i * 3 + 1] - b[j * 3 + 1]
+  const dz = a[i * 3 + 2] - b[j * 3 + 2]
   return dx * dx + dy * dy + dz * dz
 }
 
 // Builds the unique pair list: every fluid–fluid and fluid–boundary pair with
-// |x_i − x_j| < h, once. If the buffers are too small, grow them and rebuild from
-// scratch; that keeps the buffers fixed inside the hot loop, which V8 optimizes
-// much better.
-export function buildPairs(g: SpatialGrid, pos: Float32Array, nFluid: number, h: number) {
-  while (!tryBuildPairs(g, pos, nFluid, h)) {
+// |x_i − x_j| < h, once. `g` holds the fluid particles (pos, indices 0..nFluid),
+// `bg` the boundary particles (bpos, local indices 0..nb, stored as nFluid + local).
+// If the buffers are too small, grow them and rebuild from scratch; that keeps
+// the buffers fixed inside the hot loop, which V8 optimizes much better.
+export function buildPairs(
+  g: SpatialGrid, pos: Float32Array, nFluid: number, bg: SpatialGrid, bpos: Float32Array, h: number,
+) {
+  while (!tryBuildPairs(g, pos, nFluid, bg, bpos, h)) {
     const capacity = g.pairI.length * 2
     g.pairI = new Int32Array(capacity)
     g.pairJ = new Int32Array(capacity)
@@ -139,26 +177,30 @@ export function buildPairs(g: SpatialGrid, pos: Float32Array, nFluid: number, h:
   }
 }
 
-// Walks the particles in sorted (cell) order and, for each, only scans candidates
-// that come *later* in the sorted array, so every pair is found exactly once.
-// Since rows are laid out in order, the row below a particle is skipped outright
-// and its own row starts just after it: about half the candidate checks of a full
-// 3^dim stencil. Every candidate is written unconditionally and `count` only
-// advances for real pairs, avoiding a hard-to-predict branch; the fluid particle
-// is stored first. Returns false if the buffers overflow.
-function tryBuildPairs(g: SpatialGrid, pos: Float32Array, nFluid: number, h: number): boolean {
+// Walks the fluid particles in sorted (cell) order.
+//  - Fluid candidates: only those *later* in the sorted array, so every pair is
+//    found exactly once. Rows are laid out in order, so the row below a particle
+//    is skipped outright and its own row starts just after it: about half the
+//    candidate checks of a full 3^dim stencil.
+//  - Boundary candidates: the full stencil in the boundary grid (each
+//    fluid–boundary pair is only ever seen from the fluid side).
+// Every candidate is written unconditionally and `count` only advances for real
+// pairs, avoiding a hard-to-predict branch. Returns false if the buffers overflow.
+function tryBuildPairs(
+  g: SpatialGrid, pos: Float32Array, nFluid: number, bg: SpatialGrid, bpos: Float32Array, h: number,
+): boolean {
   const dim = g.dim
   const { cellStart, sorted, cellCoord, cellsPerAxis, strides, rowOffsets, pairI, pairJ, pairR2 } = g
-  const total = cellStart[g.numCells]
+  const bStart = bg.cellStart
+  const bSorted = bg.sorted
   const capacity = pairI.length
   const h2 = h * h
   const nx = cellsPerAxis[0]
   const numRows = rowOffsets.length / (dim - 1) || 1
   let count = 0
 
-  for (let k = 0; k < total; k++) {
+  for (let k = 0; k < nFluid; k++) {
     const a = sorted[k]
-    const aFluid = a < nFluid
     const cx = cellCoord[a * dim]
     const x0 = cx > 0 ? cx - 1 : 0
     const x1 = cx < nx - 1 ? cx + 1 : nx - 1
@@ -177,16 +219,29 @@ function tryBuildPairs(g: SpatialGrid, pos: Float32Array, nFluid: number, h: num
       if (!inside) continue
 
       const to = cellStart[base + x1 + 1]
-      if (to <= k + 1) continue // the whole range sorts at or before a
-      const from = Math.max(cellStart[base + x0], k + 1)
-      if (count + (to - from) > capacity) return false
-      for (let q = from; q < to; q++) {
-        const b = sorted[q]
-        const r2 = dist2(pos, a, b, dim)
-        pairI[count] = aFluid ? a : b
-        pairJ[count] = aFluid ? b : a
+      if (to > k + 1) {
+        const from = Math.max(cellStart[base + x0], k + 1)
+        if (count + (to - from) > capacity) return false
+        for (let q = from; q < to; q++) {
+          const b = sorted[q]
+          const r2 = dist2(pos, a, pos, b, dim)
+          pairI[count] = a
+          pairJ[count] = b
+          pairR2[count] = r2
+          count += r2 < h2 ? 1 : 0
+        }
+      }
+
+      const bFrom = bStart[base + x0]
+      const bTo = bStart[base + x1 + 1]
+      if (count + (bTo - bFrom) > capacity) return false
+      for (let q = bFrom; q < bTo; q++) {
+        const b = bSorted[q]
+        const r2 = dist2(pos, a, bpos, b, dim)
+        pairI[count] = a
+        pairJ[count] = nFluid + b
         pairR2[count] = r2
-        count += r2 < h2 && (aFluid || b < nFluid) ? 1 : 0
+        count += r2 < h2 ? 1 : 0
       }
     }
   }
