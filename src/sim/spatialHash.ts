@@ -1,7 +1,8 @@
 import { DIM, type Domain } from './params.ts'
 
-// Uniform grid over the (bounded) domain with cell size = h, built with a
-// counting sort. Particles inside a cell are stored in ascending index order and
+// Uniform grid over the (bounded) domain, padded by one cell on every side so
+// boundary particles just outside the walls get their own cells, with cell
+// size = h, built with a counting sort. Particles inside a cell are stored in ascending index order and
 // cells are visited in a fixed order, so neighbour iteration order is fully
 // deterministic.
 //
@@ -9,9 +10,10 @@ import { DIM, type Domain } from './params.ts'
 // in the sorted array. A neighbour query therefore scans 3^(DIM−1) contiguous
 // ranges instead of 3^DIM separate cells.
 //
-// The neighbours of i (excluding i itself) are
-// neighbors[neighborStart[i] .. neighborEnd[i]), with the matching squared
-// distances in neighborDist2.
+// The grid holds all particles (fluid and boundary), but neighbour lists are only
+// built for the fluid ones, indices 0..nFluid. The neighbours of i (excluding i
+// itself) are neighbors[neighborStart[i] .. neighborEnd[i]), with the matching
+// squared distances in neighborDist2.
 export interface SpatialGrid {
   cellSize: number
   min: number[]
@@ -28,12 +30,12 @@ export interface SpatialGrid {
   neighborDist2: Float64Array // grows with neighbors
 }
 
-export function createGrid(domain: Domain, cellSize: number, n: number): SpatialGrid {
+export function createGrid(domain: Domain, cellSize: number, nFluid: number, nTotal: number): SpatialGrid {
   const cellsPerAxis = new Int32Array(DIM)
   const strides = new Int32Array(DIM)
   let numCells = 1
   for (let d = 0; d < DIM; d++) {
-    cellsPerAxis[d] = Math.max(1, Math.ceil((domain.max[d] - domain.min[d]) / cellSize))
+    cellsPerAxis[d] = Math.max(1, Math.ceil((domain.max[d] - domain.min[d] + 2 * cellSize) / cellSize))
     strides[d] = numCells
     numCells *= cellsPerAxis[d]
   }
@@ -48,19 +50,19 @@ export function createGrid(domain: Domain, cellSize: number, n: number): Spatial
     }
   }
 
-  const capacity = n * 32
+  const capacity = nFluid * 32
   return {
     cellSize,
-    min: domain.min.slice(),
+    min: domain.min.map((v) => v - cellSize),
     cellsPerAxis,
     strides,
     numCells,
     cellStart: new Int32Array(numCells + 1),
-    sorted: new Int32Array(n),
-    cellCoord: new Int32Array(n * DIM),
+    sorted: new Int32Array(nTotal),
+    cellCoord: new Int32Array(nTotal * DIM),
     rowOffsets,
-    neighborStart: new Int32Array(n),
-    neighborEnd: new Int32Array(n),
+    neighborStart: new Int32Array(nFluid),
+    neighborEnd: new Int32Array(nFluid),
     neighbors: new Int32Array(capacity),
     neighborDist2: new Float64Array(capacity),
   }
@@ -118,7 +120,8 @@ function dist2(pos: Float32Array, i: number, j: number): number {
   return dx * dx + dy * dy + dz * dz
 }
 
-// Builds neighbour lists for every particle (all j ≠ i with |x_i − x_j| < h).
+// Builds neighbour lists for the fluid particles i < n (all j ≠ i, fluid or
+// boundary, with |x_i − x_j| < h).
 // If the list buffers are too small, grow them and rebuild from scratch; that
 // keeps the buffers fixed inside the hot loop, which V8 optimizes much better.
 export function buildNeighbors(g: SpatialGrid, pos: Float32Array, n: number, h: number) {
@@ -134,6 +137,7 @@ export function buildNeighbors(g: SpatialGrid, pos: Float32Array, n: number, h: 
 // avoids a hard-to-predict branch. Returns false if the buffers overflow.
 function tryBuildNeighbors(g: SpatialGrid, pos: Float32Array, n: number, h: number): boolean {
   const { cellStart, sorted, cellCoord, cellsPerAxis, strides, rowOffsets, neighborStart, neighborEnd } = g
+  const total = cellStart[g.numCells]
   const list = g.neighbors
   const dist = g.neighborDist2
   const capacity = list.length
@@ -142,8 +146,9 @@ function tryBuildNeighbors(g: SpatialGrid, pos: Float32Array, n: number, h: numb
   const numRows = rowOffsets.length / (DIM - 1) || 1
   let count = 0
 
-  for (let k = 0; k < n; k++) {
+  for (let k = 0; k < total; k++) {
     const i = sorted[k]
+    if (i >= n) continue
     neighborStart[i] = count
     const cx = cellCoord[i * DIM]
     const x0 = cx > 0 ? cx - 1 : 0

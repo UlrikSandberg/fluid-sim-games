@@ -26,6 +26,7 @@ export interface Params {
   brushRadius: number // mouse brush radius R (world units)
   mouseStrength: number // 0–1, fraction of the strongest safe brush (see mouseAccel)
   mouseMaxSpeed: number // speed cap for particles inside the brush (also capped by CFL)
+  obstacleSize: Vec // full width/height of the draggable rectangle obstacle
 }
 
 export const defaultParams: Readonly<Params> = {
@@ -33,10 +34,13 @@ export const defaultParams: Readonly<Params> = {
   spacing: 0.4,
   restDensity: 1000,
   // Tuned from the handoff's 2000 / 0.05 / 0.002 (see scripts/check-sim.ts):
-  // k=2000 compressed the bulk ~8% and never settled; k=6000 keeps it ~2–3%.
-  // c_s = √k ≈ 77, so CFL allows dt ≤ 0.4·h/c_s ≈ 0.005. dt=0.004 halves the
-  // substeps per frame (~4 at 60 fps), which is what makes real time affordable.
-  stiffness: 6000,
+  // k=2000 compressed the bulk ~8% and never settled. 6000 was enough while wall
+  // particles were density-deficient; with boundary particles the bottom rows
+  // count as bulk and read 1.05–1.06, so 8000 brings them back inside ±5%.
+  // c_s = √k ≈ 89, so CFL allows dt ≤ 0.4·h/c_s ≈ 0.0045. dt=0.004 keeps ~4
+  // substeps per frame at 60 fps. Don't go to 10000 at this dt: it sits exactly
+  // on the CFL limit, which leaves the mouse brush a speed cap of zero.
+  stiffness: 8000,
   useTait: false,
   viscosityEps: 0.1,
   gravity: [0, -9.8],
@@ -49,6 +53,7 @@ export const defaultParams: Readonly<Params> = {
   brushRadius: 4,
   mouseStrength: 0.5,
   mouseMaxSpeed: 15,
+  obstacleSize: [6, 3],
 }
 
 // Single mutable params object. The control panel writes into it, the loop reads it.

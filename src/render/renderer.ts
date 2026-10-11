@@ -19,6 +19,7 @@ export class Renderer {
   private readonly bounds: THREE.Box3Helper
   private readonly brush: THREE.LineLoop<THREE.BufferGeometry, THREE.LineBasicMaterial>
   private readonly arrow: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>
+  private readonly obstacle: THREE.LineLoop<THREE.BufferGeometry, THREE.LineBasicMaterial>
   private readonly resizeObserver: ResizeObserver
   private readonly container: HTMLElement
   private readonly domain: Domain
@@ -74,6 +75,19 @@ export class Renderer {
     this.arrow.visible = false
     this.scene.add(this.arrow)
 
+    // Unit square outline, scaled and moved to show the obstacle.
+    this.obstacle = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-1, -1, 1),
+        new THREE.Vector3(1, -1, 1),
+        new THREE.Vector3(1, 1, 1),
+        new THREE.Vector3(-1, 1, 1),
+      ]),
+      new THREE.LineBasicMaterial({ color: 0xc9d1d9 }),
+    )
+    this.obstacle.visible = false
+    this.scene.add(this.obstacle)
+
     this.resizeObserver = new ResizeObserver(() => this.resize())
     this.resizeObserver.observe(container)
     this.resize()
@@ -127,6 +141,14 @@ export class Renderer {
     pts.setXYZ(4, tx, ty, 1)
     pts.setXYZ(5, tx - head * (ux * c + uy * sn), ty - head * (uy * c - ux * sn), 1)
     pts.needsUpdate = true
+  }
+
+  // Shows the obstacle outline, or hides it when `center` is null.
+  setObstacle(center: number[] | null, halfSize: number[]) {
+    this.obstacle.visible = center !== null
+    if (!center) return
+    this.obstacle.position.set(center[0], center[1], 0)
+    this.obstacle.scale.set(halfSize[0], halfSize[1], 1)
   }
 
   // Client (CSS pixel) coordinates → world coordinates on the z = 0 plane.
@@ -184,6 +206,8 @@ export class Renderer {
     this.brush.material.dispose()
     this.arrow.geometry.dispose()
     this.arrow.material.dispose()
+    this.obstacle.geometry.dispose()
+    this.obstacle.material.dispose()
     this.gl.dispose()
     this.gl.domElement.remove()
   }

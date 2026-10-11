@@ -127,6 +127,14 @@ export function ControlPanel({ controller, colorMode, onColorMode, paused, onTog
         )}
       </Section>
 
+      <Section title="Obstacle">
+        <Slider label="Width" value={params.obstacleSize[0]} min={1} max={20} step={0.5} format={(v) => v.toFixed(1)}
+          onChange={(v) => update(() => (params.obstacleSize[0] = v))} />
+        <Slider label="Height" value={params.obstacleSize[1]} min={1} max={20} step={0.5} format={(v) => v.toFixed(1)}
+          onChange={(v) => update(() => (params.obstacleSize[1] = v))} />
+        <p className="note">ctrl+click places · drag moves · right-click deletes</p>
+      </Section>
+
       <Section title="Initial state (on reset)">
         <Slider label="Particles" value={params.particleCount} min={500} max={8000} step={100}
           format={(v) => v.toFixed(0)} onChange={(v) => update(() => (params.particleCount = v))} />

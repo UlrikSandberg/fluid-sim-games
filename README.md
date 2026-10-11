@@ -23,6 +23,9 @@ npm run check -- 20 stiffness=8000 dt=0.003   # headless dam break with param ov
 | `B`, or the panel's Drag toggle | Cycle brush mode |
 | Right drag, or Shift + drag | The opposite of the brush mode (reverse flow in current mode) |
 | Mouse wheel | Brush radius |
+| Ctrl + click | Place the rectangle obstacle (replaces an existing one) |
+| Left drag inside the obstacle | Move it (speed-capped like the brush) |
+| Right click on the obstacle | Delete it |
 | `1`–`4` | Colour mode: density ρ/ρ₀, neighbour count, speed, pressure |
 | Space | Pause / resume |
 
@@ -54,8 +57,8 @@ scripts/       determinism.ts, acceptance.ts, check-sim.ts (tuning)
 
 | Parameter | Handoff | Now | Why |
 | --- | --- | --- | --- |
-| `stiffness` | 2000 | 6000 | At 2000 the bulk stayed ~8% compressed and was still sloshing after 20 s. At 6000 it settles to ρ/ρ₀ ≈ 1.02–1.03. |
-| `dt` | 0.002 | 0.004 | At 0.002, real time needs 500 steps/s (~2 ms each), which is the whole CPU. 0.004 halves that and is still under CFL: c_s = √k ≈ 77, so the limit is 0.4·h/c_s ≈ 0.0052. |
+| `stiffness` | 2000 | 8000 | At 2000 the bulk stayed ~8% compressed and was still sloshing after 20 s. 6000 was enough with the wall clamp; with boundary particles the bottom rows count as bulk and read 1.05–1.06, and 8000 brings 100% of the bulk inside ±5% (mean 1.022). |
+| `dt` | 0.002 | 0.004 | At 0.002, real time needs 500 steps/s (~2 ms each), which is the whole CPU. 0.004 halves that and is still under CFL: c_s = √k ≈ 89, so the limit is 0.4·h/c_s ≈ 0.0045. At k = 10000 the limit equals dt exactly and the mouse brush's speed cap drops to zero. |
 | `viscosityEps` | 0.05 | 0.1 | Settles noticeably faster. 0.3 is flatter still but looks syrupy. |
 
 `h = 1`, `spacing = 0.4` and the derived mass were right as given: the initial lattice
@@ -91,11 +94,11 @@ reads ρ/ρ₀ = 0.994 with 20 neighbours.
 
 ### Known limitations (Phase 2 material)
 
-- **Density deficiency at walls.** Wall particles are missing half their kernel
-  support, so they crowd to about twice the normal density along each wall (about 200
-  particles in the floor layer where a normal row holds about 100), followed by a gap.
-  Boundary particles fix this. They are also the mechanism the duck's buoyancy needs.
-- **Wall slamming is the worst case for the mouse.** Most stress-test density spikes
-  happen against walls, for the same reason.
+- **Density deficiency at walls: fixed by boundary particles.** With the old wall
+  clamp, wall particles were missing half their kernel support and crowded to about
+  twice the normal density (about 200 particles in the floor layer where a normal row
+  holds about 100), followed by a gap. Static boundary particles behind each wall
+  (Akinci-style ψ weights, mirrored pressure) bring the floor layer back to about 110
+  with even row spacing. The clamp stays as a safety net.
 - **Performance headroom is thin.** The next levers are processing each pair once
   instead of twice, or Position Based Fluids, which allows much larger timesteps.

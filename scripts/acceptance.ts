@@ -84,8 +84,10 @@ function surfaceSpread(s: SimState): number {
 
 const s = createState(p)
 
-// 1–3: dam break, then settle.
-run(s, 40)
+// 1–3: dam break, then settle. 60 s rather than 40: boundary-particle walls push
+// back conservatively, so the first slosh mode decays slower than it did against
+// the old dissipative clamp.
+run(s, 60)
 const settled = bulkDensity(s)
 const spread = surfaceSpread(s)
 check(

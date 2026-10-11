@@ -23,7 +23,8 @@ export function App() {
           (s.paused ? 'paused' : `${s.substeps.toFixed(1)} substeps/frame`) +
           `\nρ/ρ₀ avg ${s.densityAvg.toFixed(3)} · max ${s.densityMax.toFixed(3)} · neighbours avg ${s.neighborsAvg.toFixed(1)}` +
           `\nbrush ${s.brushMode} [B] · R ${s.brushRadius.toFixed(1)} · accel ${s.brushAccel.toFixed(0)}` +
-          ` · right/shift-drag: opposite · wheel: resize`
+          ` · right/shift-drag: opposite · wheel: resize` +
+          `\nbox: ctrl+click places · drag moves · right-click deletes`
       }
     })
     controllerRef.current = controller

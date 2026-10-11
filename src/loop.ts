@@ -1,5 +1,5 @@
 import { DIM, mouseAccel, params, particleRadius } from './sim/params'
-import { createState, step, type MouseInput, type SimState } from './sim/sph'
+import { createState, setObstacle, step, type MouseInput, type SimState } from './sim/sph'
 import { Renderer } from './render/renderer'
 import { getColorMode, view, writeColors } from './render/colorModes'
 
@@ -42,6 +42,24 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
   let paused = false
   let pendingSteps = 0
 
+  let appliedSize = params.obstacleSize.slice()
+  const placeObstacle = (center: number[] | null) => {
+    appliedSize = params.obstacleSize.slice()
+    setObstacle(state, params, center ? { center, size: appliedSize } : null)
+  }
+  const obstacle: ObstacleInput = {
+    hit: (pt) => {
+      const o = state.obstacle
+      return o !== null && o.center.every((c, d) => Math.abs(pt[d] - c) <= o.halfSize[d])
+    },
+    center: () => state.obstacle?.center ?? null,
+    place: (pt) => placeObstacle(pt),
+    remove: () => placeObstacle(null),
+    drag: (target) => {
+      if (state.obstacle) for (let d = 0; d < DIM; d++) state.obstacle.target[d] = target[d]
+    },
+  }
+
   const mouse: MouseInput = {
     active: false,
     kind: 'radial',
@@ -49,7 +67,7 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
     sign: 1,
     arrow: new Array(DIM).fill(0),
   }
-  const input = attachMouse(container, mouse, (x, y) => renderer.screenToWorld(x, y))
+  const input = attachMouse(container, mouse, (x, y) => renderer.screenToWorld(x, y), obstacle)
 
   let accumulator = 0
   let last = performance.now()
@@ -60,6 +78,7 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
 
   const frame = (now: number) => {
     input.update()
+    if (state.obstacle && params.obstacleSize.some((w, d) => w !== appliedSize[d])) placeObstacle(state.obstacle.center)
 
     // Clamp so a backgrounded tab doesn't come back with a huge backlog. The rAF
     // timestamp can precede the performance.now() taken at startup, hence max(0).
@@ -84,12 +103,13 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
     writeColors(getColorMode(view.colorMode), state, params, renderer.colors)
     renderer.commitColors()
     renderer.setBrush(
-      input.hovering || mouse.active ? mouse.pos : null,
+      (input.hovering && !input.grabbing && !obstacle.hit(mouse.pos)) || mouse.active ? mouse.pos : null,
       params.brushRadius,
       mouse.kind === 'current' ? 'current' : mouse.sign > 0 ? 'repel' : 'attract',
       mouse.active,
     )
     renderer.setArrow(mouse.active && mouse.kind === 'current' ? mouse.pos : null, mouse.arrow, mouse.sign)
+    renderer.setObstacle(state.obstacle?.center ?? null, state.obstacle?.halfSize ?? [])
     renderer.render()
 
     frames++
@@ -116,8 +136,10 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
 
   return {
     reset() {
+      const center = state.obstacle?.center ?? null
       renderer.dispose()
       state = createState(params)
+      if (center) placeObstacle(center)
       renderer = createRenderer(state.n)
       accumulator = 0
     },
@@ -138,19 +160,38 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
 const BRUSH_MIN = 0.5
 const BRUSH_MAX = 15
 
+// What the mouse handler can ask of and do to the obstacle.
+interface ObstacleInput {
+  hit(pt: number[]): boolean
+  center(): number[] | null
+  place(pt: number[]): void
+  remove(): void
+  drag(target: number[]): void
+}
+
 // A plain drag applies the brush mode; right drag or shift+drag applies the
 // opposite. In 'current' mode the press point anchors the brush and the drag
-// draws the arrow from it. The wheel resizes the brush. Writes into `mouse`,
+// draws the arrow from it. The wheel resizes the brush. Ctrl+click places the
+// obstacle, a left drag starting inside it moves it, a right click on it deletes
+// it. Writes into `mouse`,
 // which the loop hands to every step; the loop calls update() each frame so
 // switching mode or pressing shift mid-drag takes effect without moving the mouse.
-function attachMouse(el: HTMLElement, mouse: MouseInput, toWorld: (clientX: number, clientY: number) => number[]) {
+function attachMouse(
+  el: HTMLElement,
+  mouse: MouseInput,
+  toWorld: (clientX: number, clientY: number) => number[],
+  obstacle: ObstacleInput,
+) {
   let dragButton = -1
   let shift = false
   const cursor = mouse.pos.slice()
   const anchor = mouse.pos.slice()
+  const grabOffset = mouse.pos.slice()
   const state = {
     hovering: false,
+    grabbing: false,
     update() {
+      if (state.grabbing) obstacle.drag(cursor.map((c, d) => c + grabOffset[d]))
       const flip = dragButton === 2 || shift
       mouse.kind = brush.mode === 'current' ? 'current' : 'radial'
       mouse.sign = (flip ? -1 : 1) * (brush.mode === 'attract' ? -1 : 1)
@@ -170,10 +211,24 @@ function attachMouse(el: HTMLElement, mouse: MouseInput, toWorld: (clientX: numb
   const down = (e: PointerEvent) => {
     if (e.button !== 0 && e.button !== 2) return
     e.preventDefault()
-    dragButton = e.button
     track(e)
-    for (let d = 0; d < cursor.length; d++) anchor[d] = cursor[d]
-    mouse.active = true
+    if (e.ctrlKey) {
+      obstacle.place(cursor)
+      return
+    }
+    const center = obstacle.hit(cursor) ? obstacle.center() : null
+    if (center && e.button === 2) {
+      obstacle.remove()
+      return
+    }
+    dragButton = e.button
+    if (center) {
+      for (let d = 0; d < cursor.length; d++) grabOffset[d] = center[d] - cursor[d]
+      state.grabbing = true
+    } else {
+      for (let d = 0; d < cursor.length; d++) anchor[d] = cursor[d]
+      mouse.active = true
+    }
     el.setPointerCapture(e.pointerId)
   }
   const move = (e: PointerEvent) => {
@@ -184,6 +239,7 @@ function attachMouse(el: HTMLElement, mouse: MouseInput, toWorld: (clientX: numb
     // pointercancel reports button −1, so it always ends the drag.
     if (e.type === 'pointerup' && e.button !== dragButton) return
     mouse.active = false
+    state.grabbing = false
     dragButton = -1
     if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
   }
