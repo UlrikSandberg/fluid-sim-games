@@ -1,4 +1,4 @@
-import { DIM, mouseAccel, mouseSpeedCap, particleMass, particleRadius, type Domain, type Params } from './params.ts'
+import { DIM, mouseAccel, mouseSpeedCap, obstacleMass, particleMass, particleRadius, type Domain, type Params } from './params.ts'
 import { mulberry32 } from './rng.ts'
 import { makeKernels, poly6, spikyGradMag, type Kernels } from './kernels.ts'
 import { buildGrid, buildNeighbors, createGrid, type SpatialGrid } from './spatialHash.ts'
@@ -25,13 +25,26 @@ export interface SimState {
   boundaryH: number // h the boundary layers and ψ were built for
 }
 
-// Axis-aligned rectangle filled with boundary particles. step() moves the centre
-// toward `target` no faster than mouseSpeedCap, so dragging can't break CFL.
+// A rectangle filled with boundary particles, stored as offsets in its own frame
+// and placed in the world from its pose every step.
+//  - Kinematic while grabbed, or when p.obstacleDynamic is off: step() moves the
+//    centre toward `target` no faster than mouseSpeedCap, so dragging can't break CFL.
+//  - Dynamic otherwise: the fluid's reaction forces, accumulated on its boundary
+//    particles during a step, plus gravity move and spin it. Buoyancy and drag
+//    come out of that sum; nothing models them separately.
+// Orientation is a single angle, so rotation is 2D only (3D needs a quaternion
+// and an inertia tensor); bodyPoint() is the one place that applies it.
 export interface Obstacle {
   center: number[]
   halfSize: number[]
+  angle: number
   vel: number[]
+  omega: number // angular velocity
   target: number[]
+  grabbed: boolean
+  local: Float32Array // boundary particle offsets in the body frame, stride DIM
+  force: Float64Array // fluid force on the body, accumulated over one step
+  torque: number
 }
 
 // Brush input for one step.
@@ -110,7 +123,7 @@ function seedBlock(s: SimState, p: Params) {
 // One fixed-dt substep.
 export function step(s: SimState, p: Params, mouse?: MouseInput) {
   if (s.boundaryH !== p.h) buildBoundary(s, p)
-  if (s.obstacle) moveObstacle(s, p, s.obstacle)
+  if (s.obstacle) advanceObstacle(s, p, s.obstacle)
   const total = s.n + s.nb
   if (s.grid.cellSize !== p.h || s.grid.sorted.length !== total) s.grid = createGrid(p.domain, p.h, s.n, total)
   buildGrid(s.grid, s.pos, total)
@@ -136,7 +149,18 @@ export function setObstacle(s: SimState, p: Params, rect: { center: number[]; si
     const halfSize = rect.size.map((w, d) => Math.min(Math.max(w / 2, p.spacing), (max[d] - min[d]) / 2))
     const center = rect.center.slice()
     clampCenter(center, halfSize, p.domain)
-    s.obstacle = { center, halfSize, vel: new Array(DIM).fill(0), target: center.slice() }
+    s.obstacle = {
+      center,
+      halfSize,
+      angle: 0,
+      vel: new Array(DIM).fill(0),
+      omega: 0,
+      target: center.slice(),
+      grabbed: false,
+      local: new Float32Array(0),
+      force: new Float64Array(DIM),
+      torque: 0,
+    }
   } else {
     s.obstacle = null
   }
@@ -149,7 +173,7 @@ export function setObstacle(s: SimState, p: Params, rect: { center: number[]; si
 
 // (Re)generates every boundary particle and its ψ. Runs on creation, when h
 // changes (layer count and ψ depend on it) and when the obstacle is placed,
-// resized or removed; dragging only translates the existing particles.
+// resized or removed; moving it only re-places the existing particles.
 function buildBoundary(s: SimState, p: Params) {
   const k = makeKernels(p.h)
   const sp = p.spacing
@@ -169,16 +193,15 @@ function buildBoundary(s: SimState, p: Params) {
   s.density.fill(p.restDensity, n)
   s.pos.set(walls.pos, n * DIM)
   boundaryWeights(walls.pos, walls.spacing, k, p.restDensity, s.weight, n)
-  if (obs && s.obstacle) {
-    s.pos.set(obs.pos, (n + nWall) * DIM)
-    boundaryWeights(obs.pos, obs.spacing, k, p.restDensity, s.weight, n + nWall)
-    for (let i = n + nWall; i < total; i++) {
-      for (let d = 0; d < DIM; d++) s.vel[i * DIM + d] = s.obstacle.vel[d]
-    }
-  }
   s.nb = nb
   s.nWall = nWall
   s.boundaryH = p.h
+  if (obs && s.obstacle) {
+    // ψ depends only on relative positions, so the body-frame offsets will do.
+    boundaryWeights(obs.pos, obs.spacing, k, p.restDensity, s.weight, n + nWall)
+    s.obstacle.local = Float32Array.from(obs.pos)
+    placeBody(s, s.obstacle)
+  }
 }
 
 // New array of length `len` holding the first `keep` entries of `a`.
@@ -234,7 +257,7 @@ function wallParticles(domain: Domain, sp: number, layers: number): Lattice {
 }
 
 // The obstacle's outline filled inward with `layers` rows, spacing stretched so
-// the lattice exactly spans the rectangle.
+// the lattice exactly spans the rectangle. Positions are body-frame offsets.
 function obstacleParticles(o: Obstacle, sp: number, layers: number): Lattice {
   const coords: number[][] = []
   const spacing: number[] = []
@@ -242,13 +265,13 @@ function obstacleParticles(o: Obstacle, sp: number, layers: number): Lattice {
     const cells = Math.max(1, Math.round((2 * o.halfSize[d]) / sp))
     const step = (2 * o.halfSize[d]) / cells
     const c: number[] = []
-    for (let k = 0; k < cells; k++) c.push(o.center[d] - o.halfSize[d] + (k + 0.5) * step)
+    for (let k = 0; k < cells; k++) c.push(-o.halfSize[d] + (k + 0.5) * step)
     coords.push(c)
     spacing.push(step)
   }
   const thickness = layers * sp
   const nearOutline = (_idx: number[], x: number[]) => {
-    for (let d = 0; d < DIM; d++) if (o.halfSize[d] - Math.abs(x[d] - o.center[d]) < thickness) return true
+    for (let d = 0; d < DIM; d++) if (o.halfSize[d] - Math.abs(x[d]) < thickness) return true
     return false
   }
   return { pos: latticeWhere(coords, nearOutline), spacing }
@@ -296,66 +319,164 @@ function latticeKernelSum(k: Kernels, spacing: number[]): number {
   return sum
 }
 
-// Keeps the rectangle inside the domain (centred on an axis it doesn't fit).
-function clampCenter(c: number[], halfSize: number[], domain: Domain) {
+// Keeps a box with the given half-extents inside the domain (centred on an
+// axis it doesn't fit).
+function clampCenter(c: number[], extent: number[], domain: Domain) {
   for (let d = 0; d < DIM; d++) {
-    const lo = domain.min[d] + halfSize[d]
-    const hi = domain.max[d] - halfSize[d]
+    const lo = domain.min[d] + extent[d]
+    const hi = domain.max[d] - extent[d]
     c[d] = lo > hi ? (domain.min[d] + domain.max[d]) / 2 : Math.min(hi, Math.max(lo, c[d]))
   }
 }
 
-const move = new Float64Array(DIM)
+// Half-extents of the rotated rectangle's axis-aligned bounding box.
+function bodyExtent(o: Obstacle): number[] {
+  const c = Math.abs(Math.cos(o.angle))
+  const sn = Math.abs(Math.sin(o.angle))
+  return [c * o.halfSize[0] + sn * o.halfSize[1], sn * o.halfSize[0] + c * o.halfSize[1]]
+}
 
-// Moves the obstacle toward its target at most mouseSpeedCap · dt per step. Its
-// boundary particles move with it and carry its velocity, so XSPH sees a moving wall.
-function moveObstacle(s: SimState, p: Params, o: Obstacle) {
-  clampCenter(o.target, o.halfSize, p.domain)
-  let d2 = 0
-  for (let d = 0; d < DIM; d++) {
-    move[d] = o.target[d] - o.center[d]
-    d2 += move[d] * move[d]
+// Body frame → world offset (rotation only). `inverse` maps world → body frame.
+function bodyPoint(o: Obstacle, x: number, y: number, inverse = false): [number, number] {
+  const c = Math.cos(o.angle)
+  const sn = inverse ? -Math.sin(o.angle) : Math.sin(o.angle)
+  return [c * x - sn * y, sn * x + c * y]
+}
+
+// True if world point `pt` lies inside the obstacle.
+export function obstacleContains(o: Obstacle, pt: number[]): boolean {
+  const [lx, ly] = bodyPoint(o, pt[0] - o.center[0], pt[1] - o.center[1], true)
+  return Math.abs(lx) <= o.halfSize[0] && Math.abs(ly) <= o.halfSize[1]
+}
+
+// Writes the obstacle's boundary particles from its pose: x = c + R·l and
+// v = v_c + ω × (R·l), so XSPH and pressure see a moving, spinning wall.
+function placeBody(s: SimState, o: Obstacle) {
+  const first = s.n + s.nWall
+  const count = o.local.length / DIM
+  for (let b = 0; b < count; b++) {
+    const [rx, ry] = bodyPoint(o, o.local[b * DIM], o.local[b * DIM + 1])
+    const i = (first + b) * DIM
+    s.pos[i] = o.center[0] + rx
+    s.pos[i + 1] = o.center[1] + ry
+    s.vel[i] = o.vel[0] - o.omega * ry
+    s.vel[i + 1] = o.vel[1] + o.omega * rx
   }
-  const maxStep = mouseSpeedCap(p) * p.dt
-  const f = d2 > maxStep * maxStep ? maxStep / Math.sqrt(d2) : 1
-  for (let d = 0; d < DIM; d++) {
-    move[d] *= f
-    o.center[d] += move[d]
-    o.vel[d] = move[d] / p.dt
-  }
-  for (let i = s.n + s.nWall, end = s.n + s.nb; i < end; i++) {
+}
+
+// Advances the obstacle one step, then re-places its boundary particles.
+// Kinematic: toward the target at most mouseSpeedCap · dt, no spin.
+// Dynamic: symplectic Euler on the fluid force accumulated in the previous step
+// (one step of lag, which is fine at this dt) plus gravity. Mass is
+// ρ_body · area, inertia that of a uniform rectangle.
+function advanceObstacle(s: SimState, p: Params, o: Obstacle) {
+  const dt = p.dt
+  if (o.grabbed || !p.obstacleDynamic) {
+    clampCenter(o.target, bodyExtent(o), p.domain)
+    let d2 = 0
+    for (let d = 0; d < DIM; d++) d2 += (o.target[d] - o.center[d]) ** 2
+    const maxStep = mouseSpeedCap(p) * dt
+    const f = d2 > maxStep * maxStep ? maxStep / Math.sqrt(d2) : 1
     for (let d = 0; d < DIM; d++) {
-      s.pos[i * DIM + d] += move[d]
-      s.vel[i * DIM + d] = o.vel[d]
+      const move = (o.target[d] - o.center[d]) * f
+      o.center[d] += move
+      o.vel[d] = move / dt
+    }
+    o.omega = 0
+  } else {
+    const mass = obstacleMass(p, o.halfSize)
+    const inertia = (mass * ((2 * o.halfSize[0]) ** 2 + (2 * o.halfSize[1]) ** 2)) / 12
+    for (let d = 0; d < DIM; d++) {
+      o.vel[d] += (o.force[d] / mass + p.gravity[d]) * dt
+      o.center[d] += o.vel[d] * dt
+    }
+    o.omega += (o.torque / inertia) * dt
+    o.angle += o.omega * dt
+    collideBodyWithWalls(o, p, mass, inertia)
+    for (let d = 0; d < DIM; d++) o.target[d] = o.center[d]
+  }
+  placeBody(s, o)
+  o.force.fill(0)
+  o.torque = 0
+}
+
+const CONTACT_FRICTION = 0.5 // Coulomb μ between the body and the walls
+
+// Rigid-body contact between the rectangle's corners and the domain walls. Each
+// penetrating corner is pushed back out and gets a normal impulse (with
+// restitution) plus a Coulomb friction impulse, both applied at the corner, so
+// contact produces torque: a box landing on a corner topples flat instead of
+// balancing on it. Corners and walls are visited in a fixed order (determinism).
+function collideBodyWithWalls(o: Obstacle, p: Params, mass: number, inertia: number) {
+  const { min, max } = p.domain
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) {
+      for (let d = 0; d < DIM; d++) {
+        for (const side of [-1, 1]) {
+          const [rx, ry] = bodyPoint(o, sx * o.halfSize[0], sy * o.halfSize[1])
+          const corner = o.center[d] + (d === 0 ? rx : ry)
+          const depth = side < 0 ? min[d] - corner : corner - max[d]
+          if (depth <= 0) continue
+          // Inward wall normal n and tangent t.
+          const nx = d === 0 ? -side : 0
+          const ny = d === 1 ? -side : 0
+          const tx = -ny
+          const ty = nx
+          o.center[d] -= side * depth
+          const vx = o.vel[0] - o.omega * ry
+          const vy = o.vel[1] + o.omega * rx
+          const vn = vx * nx + vy * ny
+          if (vn >= 0) continue
+          const rn = rx * ny - ry * nx
+          const jn = (-(1 + p.restitution) * vn) / (1 / mass + (rn * rn) / inertia)
+          const rt = rx * ty - ry * tx
+          const vt = vx * tx + vy * ty
+          let jt = -vt / (1 / mass + (rt * rt) / inertia)
+          const maxFriction = CONTACT_FRICTION * jn
+          jt = Math.max(-maxFriction, Math.min(maxFriction, jt))
+          o.vel[0] += (jn * nx + jt * tx) / mass
+          o.vel[1] += (jn * ny + jt * ty) / mass
+          o.omega += (jn * rn + jt * rt) / inertia
+        }
+      }
     }
   }
 }
 
 // Safety net like the wall clamp, and what clears the area when an obstacle is
-// placed. A fluid particle inside the outline (grown by the particle radius) is
-// mirrored across the nearest face, so particles at different depths don't land
-// on the same spot, and its velocity into that face, relative to the obstacle,
-// is reflected with restitution.
+// placed. Works in the body frame: a fluid particle inside the outline (grown by
+// the particle radius) is mirrored across the nearest face, so particles at
+// different depths don't land on the same spot, and its velocity into that face,
+// relative to the body's surface velocity there, is reflected with restitution.
 function pushOutOfObstacle(s: SimState, p: Params, o: Obstacle) {
   const { n, pos, vel } = s
   const r = particleRadius(p)
   const e = p.restitution
   for (let i = 0; i < n; i++) {
+    const local = bodyPoint(o, pos[i * DIM] - o.center[0], pos[i * DIM + 1] - o.center[1], true)
     let face = 0
     let depth = Infinity
     for (let d = 0; d < DIM; d++) {
-      const dd = o.halfSize[d] + r - Math.abs(pos[i * DIM + d] - o.center[d])
+      const dd = o.halfSize[d] + r - Math.abs(local[d])
       if (dd < depth) {
         depth = dd
         face = d
       }
     }
     if (depth <= 0) continue
-    const k = i * DIM + face
-    const sign = pos[k] >= o.center[face] ? 1 : -1
-    pos[k] += sign * 2 * depth
-    const vn = (vel[k] - o.vel[face]) * sign
-    if (vn < 0) vel[k] = o.vel[face] - sign * vn * e
+    const sign = local[face] >= 0 ? 1 : -1
+    local[face] += sign * 2 * depth
+    const [rx, ry] = bodyPoint(o, local[0], local[1])
+    pos[i * DIM] = o.center[0] + rx
+    pos[i * DIM + 1] = o.center[1] + ry
+    const normal = bodyPoint(o, face === 0 ? sign : 0, face === 1 ? sign : 0)
+    const relX = vel[i * DIM] - (o.vel[0] - o.omega * ry)
+    const relY = vel[i * DIM + 1] - (o.vel[1] + o.omega * rx)
+    const vn = relX * normal[0] + relY * normal[1]
+    if (vn < 0) {
+      vel[i * DIM] -= (1 + e) * vn * normal[0]
+      vel[i * DIM + 1] -= (1 + e) * vn * normal[1]
+    }
   }
 }
 
@@ -398,9 +519,13 @@ function equationOfState(rho: number, p: Params): number {
 // a_i = g − (1/ρ_i) Σ_j m (p_i + p_j)/(2ρ_j) ∇W_spiky(r_ij)
 // With ∇W = −C(h − r)² r̂ and r̂ = (x_i − x_j)/r, this pushes i away from j.
 // Boundary neighbours b mirror i's pressure (p_b = p_i, ρ_b = ρ_i): −ψ_b p_i/ρ_i² ∇W.
+// Each boundary push on fluid i from an obstacle particle b is reacted onto the
+// body (−m_i a_ib at x_b), which is where buoyancy and form drag come from.
 function computeAccelerations(s: SimState, p: Params, k: Kernels) {
   const { n, pos, acc, mass, weight, density, pressure } = s
   const { neighborStart, neighborEnd, neighbors, neighborDist2 } = s.grid
+  const o = s.obstacle
+  const bodyStart = n + s.nWall
 
   for (let i = 0; i < n; i++) {
     for (let d = 0; d < DIM; d++) acc[i * DIM + d] = p.gravity[d]
@@ -416,6 +541,13 @@ function computeAccelerations(s: SimState, p: Params, k: Kernels) {
       const scale = (shared * spikyGradMag(k, r)) / (r * rhoi)
       for (let d = 0; d < DIM; d++) {
         acc[i * DIM + d] += scale * (pos[i * DIM + d] - pos[j * DIM + d])
+      }
+      if (o && j >= bodyStart) {
+        const fx = -mass * scale * (pos[i * DIM] - pos[j * DIM])
+        const fy = -mass * scale * (pos[i * DIM + 1] - pos[j * DIM + 1])
+        o.force[0] += fx
+        o.force[1] += fy
+        o.torque += (pos[j * DIM] - o.center[0]) * fy - (pos[j * DIM + 1] - o.center[1]) * fx
       }
     }
   }
@@ -489,8 +621,10 @@ function applyCurrent(s: SimState, p: Params, mouse: MouseInput) {
 // does not depend on particle visiting order. Boundary neighbours take part with
 // their own (wall or obstacle) velocity and ρ₀.
 function integrate(s: SimState, p: Params, k: Kernels) {
-  const { n, pos, acc, weight, density } = s
+  const { n, pos, acc, mass, weight, density } = s
   const { neighborStart, neighborEnd, neighbors, neighborDist2 } = s.grid
+  const o = s.obstacle
+  const bodyStart = n + s.nWall
   const dt = p.dt
   const eps = p.viscosityEps
   const vel = s.vel
@@ -505,6 +639,15 @@ function integrate(s: SimState, p: Params, k: Kernels) {
       const w = (eps * weight[j] * poly6(k, neighborDist2[q])) / density[j]
       for (let d = 0; d < DIM; d++) {
         out[i * DIM + d] += w * (vel[j * DIM + d] - vel[i * DIM + d])
+      }
+      // The obstacle drags fluid along (or holds it back); react that momentum
+      // change onto the body as skin friction, so a current can carry it.
+      if (o && j >= bodyStart) {
+        const fx = (-mass * w * (vel[j * DIM] - vel[i * DIM])) / dt
+        const fy = (-mass * w * (vel[j * DIM + 1] - vel[i * DIM + 1])) / dt
+        o.force[0] += fx
+        o.force[1] += fy
+        o.torque += (pos[j * DIM] - o.center[0]) * fy - (pos[j * DIM + 1] - o.center[1]) * fx
       }
     }
   }

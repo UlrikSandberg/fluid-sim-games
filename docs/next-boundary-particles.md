@@ -1,7 +1,8 @@
 # Next: boundary particles and a draggable rectangle obstacle
 
-Plan agreed at the end of the Phase 1 session. **Status: steps 1–3 done** (wall
-boundary particles, rectangle obstacle, dragging); step 4 is in progress. Read the
+Plan agreed at the end of the Phase 1 session. **Status: all four steps done.**
+Step 4 became: rotation, two-way coupling (pressure and XSPH reactions), corner
+contacts, and `scripts/buoyancy.ts`. Read the
 README's "Phase 1 notes" first.
 
 ## Goal

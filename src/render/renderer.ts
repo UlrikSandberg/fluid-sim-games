@@ -144,11 +144,12 @@ export class Renderer {
   }
 
   // Shows the obstacle outline, or hides it when `center` is null.
-  setObstacle(center: number[] | null, halfSize: number[]) {
+  setObstacle(center: number[] | null, halfSize: number[], angle: number) {
     this.obstacle.visible = center !== null
     if (!center) return
     this.obstacle.position.set(center[0], center[1], 0)
     this.obstacle.scale.set(halfSize[0], halfSize[1], 1)
+    this.obstacle.rotation.z = angle
   }
 
   // Client (CSS pixel) coordinates → world coordinates on the z = 0 plane.

@@ -27,6 +27,8 @@ export interface Params {
   mouseStrength: number // 0–1, fraction of the strongest safe brush (see mouseAccel)
   mouseMaxSpeed: number // speed cap for particles inside the brush (also capped by CFL)
   obstacleSize: Vec // full width/height of the draggable rectangle obstacle
+  obstacleDynamic: boolean // float freely under fluid forces and gravity (else stays put)
+  obstacleDensity: number // body density as a fraction of restDensity (0.5 floats half-submerged)
 }
 
 export const defaultParams: Readonly<Params> = {
@@ -54,6 +56,8 @@ export const defaultParams: Readonly<Params> = {
   mouseStrength: 0.5,
   mouseMaxSpeed: 15,
   obstacleSize: [6, 3],
+  obstacleDynamic: false,
+  obstacleDensity: 0.5,
 }
 
 // Single mutable params object. The control panel writes into it, the loop reads it.
@@ -100,4 +104,9 @@ export function mouseSpeedCap(p: Params): number {
 const MOUSE_MAX_COMPRESSION = 0.15
 export function mouseAccel(p: Params): number {
   return (p.mouseStrength * MOUSE_MAX_COMPRESSION * soundSpeed(p) ** 2) / p.brushRadius
+}
+
+// Rigid-body mass of the obstacle: its density times its area (volume in 3D).
+export function obstacleMass(p: Params, halfSize: number[]): number {
+  return p.obstacleDensity * p.restDensity * halfSize.reduce((a, hs) => a * 2 * hs, 1)
 }

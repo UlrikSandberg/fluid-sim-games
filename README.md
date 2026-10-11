@@ -11,7 +11,7 @@ parameter change (`DIM` in `src/sim/params.ts`), not a rewrite.
 npm install
 npm run dev            # http://localhost:5173
 npm run build          # typecheck + static build in dist/
-npm test               # determinism + headless acceptance checks (~1 min)
+npm test               # determinism, acceptance and buoyancy checks (~3 min)
 npm run check -- 20 stiffness=8000 dt=0.003   # headless dam break with param overrides
 ```
 
@@ -24,7 +24,7 @@ npm run check -- 20 stiffness=8000 dt=0.003   # headless dam break with param ov
 | Right drag, or Shift + drag | The opposite of the brush mode (reverse flow in current mode) |
 | Mouse wheel | Brush radius |
 | Ctrl + click | Place the rectangle obstacle (replaces an existing one) |
-| Left drag inside the obstacle | Move it (speed-capped like the brush) |
+| Left drag inside the obstacle | Move it (speed-capped like the brush); a floating one keeps its velocity on release, so you can throw it |
 | Right click on the obstacle | Delete it |
 | `1`–`4` | Colour mode: density ρ/ρ₀, neighbour count, speed, pressure |
 | Space | Pause / resume |
@@ -100,5 +100,13 @@ reads ρ/ρ₀ = 0.994 with 20 neighbours.
   holds about 100), followed by a gap. Static boundary particles behind each wall
   (Akinci-style ψ weights, mirrored pressure) bring the floor layer back to about 110
   with even row spacing. The clamp stays as a safety net.
+- **Floating bodies (the duck's mechanics).** With the panel's Body toggle set
+  to Floats, the obstacle is a rigid body. Every boundary push on the fluid (pressure)
+  and every velocity change it causes (XSPH) is reacted back onto it as a force
+  and torque, then integrated with gravity. Nothing models buoyancy explicitly, yet
+  `npm run test:buoyancy` shows boxes at 0.25, 0.5 and 0.75 ρ₀ floating within 0.12
+  of Archimedes' draft, and a 1.5 ρ₀ box sinking and resting flat. Wall contact uses
+  per-corner impulses with friction, so a box landing on a corner topples. Rotation
+  is a single angle, so it is 2D only.
 - **Performance headroom is thin.** The next levers are processing each pair once
   instead of twice, or Position Based Fluids, which allows much larger timesteps.

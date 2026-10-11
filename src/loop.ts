@@ -1,5 +1,5 @@
 import { DIM, mouseAccel, params, particleRadius } from './sim/params'
-import { createState, setObstacle, step, type MouseInput, type SimState } from './sim/sph'
+import { createState, obstacleContains, setObstacle, step, type MouseInput, type SimState } from './sim/sph'
 import { Renderer } from './render/renderer'
 import { getColorMode, view, writeColors } from './render/colorModes'
 
@@ -48,15 +48,19 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
     setObstacle(state, params, center ? { center, size: appliedSize } : null)
   }
   const obstacle: ObstacleInput = {
-    hit: (pt) => {
-      const o = state.obstacle
-      return o !== null && o.center.every((c, d) => Math.abs(pt[d] - c) <= o.halfSize[d])
-    },
+    hit: (pt) => state.obstacle !== null && obstacleContains(state.obstacle, pt),
     center: () => state.obstacle?.center ?? null,
     place: (pt) => placeObstacle(pt),
     remove: () => placeObstacle(null),
+    // While grabbed the body is kinematic (follows the mouse, speed-capped); on
+    // release a floating body keeps that velocity, so it can be thrown.
     drag: (target) => {
-      if (state.obstacle) for (let d = 0; d < DIM; d++) state.obstacle.target[d] = target[d]
+      if (!state.obstacle) return
+      state.obstacle.grabbed = true
+      for (let d = 0; d < DIM; d++) state.obstacle.target[d] = target[d]
+    },
+    release: () => {
+      if (state.obstacle) state.obstacle.grabbed = false
     },
   }
 
@@ -109,7 +113,7 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
       mouse.active,
     )
     renderer.setArrow(mouse.active && mouse.kind === 'current' ? mouse.pos : null, mouse.arrow, mouse.sign)
-    renderer.setObstacle(state.obstacle?.center ?? null, state.obstacle?.halfSize ?? [])
+    renderer.setObstacle(state.obstacle?.center ?? null, state.obstacle?.halfSize ?? [], state.obstacle?.angle ?? 0)
     renderer.render()
 
     frames++
@@ -167,6 +171,7 @@ interface ObstacleInput {
   place(pt: number[]): void
   remove(): void
   drag(target: number[]): void
+  release(): void
 }
 
 // A plain drag applies the brush mode; right drag or shift+drag applies the
@@ -239,6 +244,7 @@ function attachMouse(
     // pointercancel reports button −1, so it always ends the drag.
     if (e.type === 'pointerup' && e.button !== dragButton) return
     mouse.active = false
+    if (state.grabbing) obstacle.release()
     state.grabbing = false
     dragButton = -1
     if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)

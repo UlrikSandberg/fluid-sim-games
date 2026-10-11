@@ -11,7 +11,8 @@
     "check": "node scripts/check-sim.ts",
     "test:determinism": "node scripts/determinism.ts",
     "test:acceptance": "node scripts/acceptance.ts",
-    "test": "node scripts/determinism.ts && node scripts/acceptance.ts"
+    "test": "node scripts/determinism.ts && node scripts/acceptance.ts && node scripts/buoyancy.ts",
+    "test:buoyancy": "node scripts/buoyancy.ts"
   },
   "dependencies": {
     "react": "^19.2.8",

@@ -128,11 +128,30 @@ export function ControlPanel({ controller, colorMode, onColorMode, paused, onTog
       </Section>
 
       <Section title="Obstacle">
+        <div className="row">
+          <span>Body</span>
+          <div className="toggle" role="radiogroup">
+            {([false, true] as const).map((dynamic) => (
+              <button key={String(dynamic)} role="radio" aria-checked={params.obstacleDynamic === dynamic}
+                className={params.obstacleDynamic === dynamic ? 'on current' : undefined}
+                onClick={() => update(() => (params.obstacleDynamic = dynamic))}>
+                {dynamic ? 'Floats' : 'Fixed'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <Slider label="Density" value={params.obstacleDensity} min={0.1} max={2} step={0.05}
+          format={(v) => `${v.toFixed(2)}ρ₀`} onChange={(v) => update(() => (params.obstacleDensity = v))} />
+        <p className="note">
+          {params.obstacleDensity < 1
+            ? `floats ${(params.obstacleDensity * 100).toFixed(0)}% submerged`
+            : 'denser than water: sinks'}
+        </p>
         <Slider label="Width" value={params.obstacleSize[0]} min={1} max={20} step={0.5} format={(v) => v.toFixed(1)}
           onChange={(v) => update(() => (params.obstacleSize[0] = v))} />
         <Slider label="Height" value={params.obstacleSize[1]} min={1} max={20} step={0.5} format={(v) => v.toFixed(1)}
           onChange={(v) => update(() => (params.obstacleSize[1] = v))} />
-        <p className="note">ctrl+click places · drag moves · right-click deletes</p>
+        <p className="note">ctrl+click places · drag moves (throw when floating) · right-click deletes</p>
       </Section>
 
       <Section title="Initial state (on reset)">
