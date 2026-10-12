@@ -27,6 +27,8 @@ export class Renderer3D {
   private readonly surface: WaterSurface3D
   private readonly stone = new THREE.MeshLambertMaterial({ color: 0x5b6470 })
   private readonly solids: THREE.Mesh<THREE.BoxGeometry, THREE.MeshLambertMaterial>[] = []
+  private readonly ground = new THREE.MeshLambertMaterial({ color: 0x3f5a3a, side: THREE.DoubleSide })
+  private readonly banks: THREE.Mesh<THREE.BufferGeometry, THREE.MeshLambertMaterial>[] = []
   private readonly resizeObserver: ResizeObserver
   private readonly container: HTMLElement
 
@@ -117,6 +119,33 @@ export class Renderer3D {
     this.solids.push(box)
   }
 
+  // Adds a river bank as a solid block of land: a wall along `line` ((x, z)
+  // points) from the floor up to height(x), ground on top out to z = `outerZ`, and
+  // the block's outer side and ends closed, so there's no hollow to look into.
+  addBank(line: number[][], height: (x: number) => number, outerZ: number) {
+    const positions: number[] = []
+    const quad = (a: number[], b: number[], c: number[], d: number[]) => positions.push(...a, ...b, ...c, ...a, ...c, ...d)
+    for (let i = 0; i + 1 < line.length; i++) {
+      const [x0, z0] = line[i]
+      const [x1, z1] = line[i + 1]
+      const h0 = height(x0)
+      const h1 = height(x1)
+      quad([x0, 0, z0], [x1, 0, z1], [x1, h1, z1], [x0, h0, z0]) // bank wall
+      quad([x0, h0, z0], [x1, h1, z1], [x1, h1, outerZ], [x0, h0, outerZ]) // ground
+      quad([x0, 0, outerZ], [x1, 0, outerZ], [x1, h1, outerZ], [x0, h0, outerZ]) // outer side
+    }
+    for (const [x, z] of [line[0], line[line.length - 1]]) {
+      const h = height(x)
+      quad([x, 0, z], [x, 0, outerZ], [x, h, outerZ], [x, h, z]) // ends
+    }
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    geometry.computeVertexNormals()
+    const bank = new THREE.Mesh(geometry, this.ground)
+    this.body.parent!.add(bank)
+    this.banks.push(bank)
+  }
+
   // Shows the floating body (tank coordinates, quaternion [w, x, y, z]), or hides it.
   setBody(center: number[] | null, halfSize: number[], q: number[]) {
     this.body.visible = center !== null
@@ -168,7 +197,9 @@ export class Renderer3D {
     this.body.geometry.dispose()
     this.body.material.dispose()
     for (const s of this.solids) s.geometry.dispose()
+    for (const b of this.banks) b.geometry.dispose()
     this.stone.dispose()
+    this.ground.dispose()
     this.bounds.dispose()
     this.floor.dispose()
     this.gl.dispose()

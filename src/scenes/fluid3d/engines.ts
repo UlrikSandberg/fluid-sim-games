@@ -67,6 +67,9 @@ export class CpuEngine implements FluidEngine {
 export class GpuEngine implements FluidEngine {
   readonly kind = 'gpu'
   obstacle: Obstacle | null = null
+  // Extra constraint on the body after each step (e.g. the river's curved banks,
+  // which the CPU-side rigid body doesn't otherwise know about).
+  constrainBody: ((o: Obstacle) => void) | null = null
   private readonly gpu: GpuSph
   private readonly params: Params
   private lattice: { local: Float32Array; psi: Float32Array } | null = null
@@ -103,7 +106,10 @@ export class GpuEngine implements FluidEngine {
         o.force[k] = f ? f[k] : 0
         o.torque[k] = f ? f[3 + k] : 0
       }
-      for (let k = 0; k < substeps; k++) integrateObstacle(o, this.params, frame)
+      for (let k = 0; k < substeps; k++) {
+        integrateObstacle(o, this.params, frame)
+        this.constrainBody?.(o)
+      }
       this.gpu.setBody(o, this.lattice.local, this.lattice.psi)
     }
     this.gpu.step(substeps, frame, gravity, o)

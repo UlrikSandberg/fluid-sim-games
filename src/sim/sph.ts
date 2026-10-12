@@ -338,6 +338,15 @@ function wallParticles(domain: Domain, sp: number, layers: number): Lattice {
   return { pos: latticeWhere(coords, (idx) => idx.some((k, d) => !inside[d][k])), spacing }
 }
 
+// ψ (Akinci) for an arbitrary set of boundary particles (stride dim) sampled at
+// roughly the given per-axis spacing, e.g. a curved river bank.
+export function boundaryWeightsFor(p: Params, pos: number[], spacing: number[]): Float32Array {
+  const dim = dimOf(p)
+  const psi = new Float32Array(pos.length / dim)
+  boundaryWeights(pos, spacing, makeKernels(p.h, dim), p.restDensity, psi, 0)
+  return psi
+}
+
 export interface SolidBox {
   min: number[]
   max: number[]

@@ -29,6 +29,9 @@ export interface GpuScene {
   boxes?: SolidBox[] // static solids for the push-out (their surfaces must be in `boundary`)
   current?: { speed: number; rate: number } // pull toward +x speed `speed` at `rate` 1/s
   recycle?: { exitX: number; inletX: number; lift: number }
+  // A winding channel along x: centreline z = centerZ + amplitude·sin(wavenumber·x),
+  // fluid kept within halfWidth of it (the banks' boundary particles go in `boundary`).
+  channel?: { amplitude: number; wavenumber: number; halfWidth: number; centerZ: number }
 }
 
 // The sandbox tank: createState's dam-break block and wall boundary.
@@ -78,6 +81,7 @@ export class GpuSph {
   private disposed = false
   private readonly boxes: SolidBox[]
   private readonly recycle: GpuScene['recycle']
+  private readonly channel: GpuScene['channel']
   // Live-adjustable river current (speed 0, rate 0 = none).
   readonly current: { speed: number; rate: number }
 
@@ -89,6 +93,7 @@ export class GpuSph {
     if ((scene.boxes?.length ?? 0) > MAX_BOXES) throw new Error(`at most ${MAX_BOXES} solid boxes`)
     this.boxes = scene.boxes ?? []
     this.recycle = scene.recycle
+    this.channel = scene.channel
     this.current = { ...(scene.current ?? { speed: 0, rate: 0 }) }
 
     // Static boundary particles, cell-sorted on the same grid layout the GPU uses.
@@ -289,9 +294,12 @@ export class GpuSph {
     const rc = this.recycle
     set(22, rc ? [rc.exitX, rc.inletX, rc.lift, 1] : [0, 0, 0, 0])
     set(23, [this.boxes.length, 0, 0, 0], true)
+    const ch = this.channel
+    set(24, ch ? [ch.amplitude, ch.wavenumber, ch.halfWidth, 1] : [0, 0, 0, 0])
+    set(25, ch ? [ch.centerZ, 0, 0, 0] : [0, 0, 0, 0])
     this.boxes.forEach((box, b) => {
-      set(24 + 2 * b, [...box.min, 0])
-      set(25 + 2 * b, [...box.max, 0])
+      set(26 + 2 * b, [...box.min, 0])
+      set(27 + 2 * b, [...box.max, 0])
     })
     this.device.queue.writeBuffer(this.uniform, 0, this.uniformData)
   }

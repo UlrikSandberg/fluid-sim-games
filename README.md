@@ -113,26 +113,39 @@ Not in 3D yet: resizing the tank.
 
 ## River Race scene (in progress)
 
-A 60×14×12 channel on the GPU solver (`src/scenes/race/`). A solid ledge fills the
-first 20 units, so water runs along a 2.5-deep upper reach, pours over the ledge as a
-waterfall and continues along a 3-deep lower reach. About 16k particles, sized with
-modest GPUs in mind. Three solver features make it a river, all general enough for
-the sandbox too:
+A winding channel with a waterfall, on the GPU solver (`src/scenes/race/`). A solid
+ledge fills the upstream part, so water runs along the upper reach, pours over the
+ledge as a waterfall and winds on along the lower reach. The default course has about
+12.6k particles, sized with modest GPUs in mind.
 
-- **Solid boxes** (`GpuScene.boxes`, up to 4): static boundary particles on their
-  exposed faces (`staticBoundary` in `sph.ts`) plus a push-out in the integrate pass.
-  The ledge is one; rocks will be more.
-- **Current:** each particle's downstream velocity relaxes toward a target speed
-  (panel slider, default 3), standing in for a real river's slope and bed friction.
-  A plain downhill push would accelerate forever with free-slip walls.
-- **Recycling:** water within 3 of the far end re-enters at the inlet, lifted onto
-  the ledge, so the river never drains.
+**Dials** (the River panel):
+- **Course** (applies on Reset, which turns amber while changes are pending):
+  particle size (the main particle-count dial: 0.5 gives ~12.6k, 0.35 ~32k; h, dt
+  and the grid scale with it), length, width, bends, bend size, waterfall height, and
+  upper and lower depth. The panel estimates the particle count before you apply.
+- **Water** (live): current speed and pull, gravity, stiffness, XSPH ε, and dt with
+  its CFL limit.
+- **Duck:** density (live) and size (next drop). `D` drops one at the inlet.
 
-`D` drops a duck (a 1.6×1×1.2 box for now) at the inlet; it rides over the waterfall
-to the end in about 16 s. Next: real ducks (several, with collisions between them),
-random swirls, obstacles and gravity-flip power-ups, and race rules (start, finish,
-winner, a camera that follows the leaders). Known roughness: some splash where
-recycled water re-enters at the inlet.
+**What makes it a river** (solver features in `src/gpu`, usable by the sandbox too):
+- **Winding channel:** the centreline is z = z₀ + A·sin(kx). The banks are boundary
+  particles sampled every spacing along their arc length (sampling by x would leave
+  gaps in the bends), and the shader keeps each particle within the half width
+  measured perpendicular to the centreline, reflecting off the bank. Checked with
+  the default course: 0 of 12,644 particles outside the banks over 6 s.
+- **Current:** each particle's velocity along the channel direction (following the
+  bends) relaxes toward a target speed. It stands in for a real river's slope and bed
+  friction; a plain downhill push would accelerate forever with free-slip walls.
+- **Solid boxes:** the ledge is a static solid (boundary particles on its exposed
+  faces, push-out in the shader); rocks will be more of these.
+- **Recycling:** water near the far end re-enters at the inlet, lifted onto the ledge
+  and keeping its place across the channel, so the river never drains.
+
+The duck is kept between the banks on the CPU side (`constrainBody` on the GPU
+engine). The banks render as solid blocks of land whose height follows the water.
+Next: real ducks (several, with collisions), random swirls, obstacles and
+gravity-flip power-ups, and race rules (start, finish, winner, a camera that follows
+the leaders). Known roughness: some splash where recycled water re-enters.
 
 ## Layout
 

@@ -15,7 +15,7 @@ export const SCAN_THREADS = 256
 
 // Field order must match GpuSph.writeParams.
 export const MAX_BOXES = 4
-export const PARAMS_VEC4S = 24 + 2 * MAX_BOXES
+export const PARAMS_VEC4S = 26 + 2 * MAX_BOXES
 
 export const sphWgsl = /* wgsl */ `
 struct Params {
@@ -43,6 +43,8 @@ struct Params {
   current: vec4f,    // river current: target speed along +x, relaxation rate (0 = off)
   recycle: vec4f,    // past x = exitX, move to inletX + (x − exitX) and up by lift; enabled (0/1)
   boxCount: vec4u,   // static solid boxes in use
+  channel: vec4f,    // winding channel: amplitude, wavenumber, half width, enabled (0/1)
+  channel2: vec4f,   // centreline z at amplitude 0, 0, 0, 0
   boxes: array<vec4f, ${2 * MAX_BOXES}>, // min, max per box (static, solid)
 }
 
@@ -103,6 +105,16 @@ fn frameAccel(x: vec3f, v: vec3f) -> vec3f {
   let r = x - P.pivot.xyz;
   let w = P.omega.xyz;
   return -cross(P.alpha.xyz, r) - cross(w, cross(w, r)) - 2.0 * cross(w, v);
+}
+
+// The winding channel's centreline z(x) = z₀ + A sin(k x) and its slope dz/dx.
+fn channelZ(x: f32) -> f32 { return P.channel2.x + P.channel.x * sin(P.channel.y * x); }
+fn channelSlope(x: f32) -> f32 { return P.channel.x * P.channel.y * cos(P.channel.y * x); }
+
+// Downstream direction: +x, or along the channel where it winds.
+fn downstream(x: vec3f) -> vec3f {
+  if (P.channel.w < 0.5) { return vec3f(1.0, 0.0, 0.0); }
+  return normalize(vec3f(1.0, 0.0, channelSlope(x.x)));
 }
 
 fn cellCoords(x: vec3f) -> vec3i {
@@ -268,7 +280,8 @@ fn accel(@builtin(global_invocation_id) gid: vec3u) {
   var a = P.gravity.xyz + frameAccel(xi, vi);
   // River current: relax the downstream velocity toward the target speed
   // (stands in for the slope plus bed friction of a real river).
-  a.x += P.current.y * (P.current.x - vi.x);
+  let t = downstream(xi);
+  a += P.current.y * (P.current.x - dot(vi, t)) * t;
   var range: vec2u;
   for (var dz = -1; dz <= 1; dz++) {
     for (var dy = -1; dy <= 1; dy++) {
@@ -391,6 +404,21 @@ fn integrate(@builtin(global_invocation_id) gid: vec3u) {
     if (v[axis] * side < 0.0) { v[axis] = -v[axis] * e; }
   }
 
+  // Winding channel banks: keep the perpendicular distance from the centreline
+  // within the half width (less the particle radius), reflecting off the bank.
+  if (P.channel.w > 0.5) {
+    let slope = channelSlope(x.x);
+    let stretch = sqrt(1.0 + slope * slope);
+    let across = (x.z - channelZ(x.x)) / stretch; // signed perpendicular distance
+    let limit = P.channel.z - r;
+    if (abs(across) > limit) {
+      let n = sign(across) * vec3f(-slope, 0.0, 1.0) / stretch; // outward bank normal
+      x -= (abs(across) - limit) * n;
+      let vn = dot(v, n);
+      if (vn > 0.0) { v -= (1.0 + e) * vn * n; }
+    }
+  }
+
   // Walls: clamp inset by the particle radius, reflect with restitution.
   let lo = P.domainMin.xyz + vec3f(r);
   let hi = P.domainMax.xyz - vec3f(r);
@@ -407,8 +435,11 @@ fn integrate(@builtin(global_invocation_id) gid: vec3u) {
   // Recycling: water reaching the end of the channel re-enters at the inlet,
   // lifted by the height difference (a pump, so the river never runs dry).
   if (P.recycle.w > 0.5 && x.x > P.recycle.x) {
+    let exitedAt = x.x;
     x.x = x.x - P.recycle.x + P.recycle.y;
     x.y = min(x.y + P.recycle.z, hi.y);
+    // Keep the particle's place across the channel.
+    if (P.channel.w > 0.5) { x.z += channelZ(x.x) - channelZ(exitedAt); }
   }
   particles[i] = Particle(vec4f(x, 0.0), vec4f(v, 0.0));
 }
