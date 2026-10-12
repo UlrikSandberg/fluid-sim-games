@@ -4,7 +4,7 @@ import { colorModes, getColorMode, type ColorModeId, type RenderStyle } from '..
 import { Hud } from '../../ui/Hud'
 import { Legend } from '../../ui/Legend'
 import { Section, Slider } from '../../ui/controls'
-import { courseState, raceParams, raceView, startRaceLoop, type RaceController, type Standing } from './loop'
+import { RIDE_DISTANCE, courseState, raceParams, raceView, startRaceLoop, type RaceController, type Standing } from './loop'
 import { RANDOM_RANGES, countFor, raceSettings, type RandomDial } from './features'
 import { duckColor, duckName, racers, renderEvents, renderStandings, saveRacers } from './racers'
 import { defaultRiverLayout, estimateParticles, riverLayout } from './riverScene'
@@ -66,7 +66,7 @@ export function RiverRace() {
         hudRef.current.textContent =
           `GPU · ${s.fps.toFixed(0)} fps · ${s.particles.toLocaleString()} particles · ${s.ducks} ducks · ` +
           (s.status === 'running' ? `${s.substeps.toFixed(1)} substeps/frame` : s.status) +
-          `\nS: start · N: new course · C: ride a duck, ←/→ steer, ↑ paddle · D: add a duck · F: follow · Space: pause`
+          `\nS: start · N: new course · C: duck cam (1st/3rd), ←/→ steer, ↑ paddle · D: add a duck · F: follow · Space: pause`
       }
     })
     controllerRef.current = controller
@@ -76,18 +76,36 @@ export function RiverRace() {
     }
   }, [])
 
-  // Rides the last ridden duck (the first racer to begin with), or stops riding.
+  // Cycles the camera: orbit → first person → third person → orbit, riding the
+  // last ridden duck (the first racer to begin with).
   const lastRide = useRef(0)
   const [, setRideTick] = useState(0)
   const toggleRide = () => {
-    if (raceView.ride >= 0) {
+    if (raceView.ride < 0) {
+      raceView.ride = Math.min(lastRide.current, raceView.duckCount - 1)
+      raceView.rideView = 'first'
+    } else if (raceView.rideView === 'first') {
+      raceView.rideView = 'third'
+    } else {
       lastRide.current = raceView.ride
       raceView.ride = -1
-    } else {
-      raceView.ride = Math.min(lastRide.current, raceView.duckCount - 1)
     }
     setRideTick((t) => t + 1)
   }
+
+  // The mouse wheel moves the third-person camera nearer or farther (the orbit
+  // controls, which zoom otherwise, are off while riding).
+  useEffect(() => {
+    const host = canvasHostRef.current
+    if (!host) return
+    const onWheel = (e: WheelEvent) => {
+      if (raceView.ride < 0 || raceView.rideView !== 'third') return
+      const [lo, hi] = RIDE_DISTANCE
+      raceView.rideDistance = Math.min(hi, Math.max(lo, raceView.rideDistance * Math.exp(e.deltaY * 0.001)))
+    }
+    host.addEventListener('wheel', onWheel, { passive: true })
+    return () => host.removeEventListener('wheel', onWheel)
+  }, [])
   const togglePause = () => {
     controllerRef.current?.setPaused(!paused)
     setPaused(!paused)
@@ -414,11 +432,11 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
         <div className="row">
           <span>View</span>
           <div className="toggle" role="radiogroup">
-            {(['first', 'chase'] as const).map((v) => (
+            {(['first', 'third'] as const).map((v) => (
               <button key={v} role="radio" aria-checked={raceView.rideView === v}
                 className={raceView.rideView === v ? 'on current' : undefined}
                 onClick={() => update(() => (raceView.rideView = v))}>
-                {v === 'first' ? 'First person' : 'Chase'}
+                {v === 'first' ? 'First person' : 'Third person'}
               </button>
             ))}
           </div>

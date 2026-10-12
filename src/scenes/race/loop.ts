@@ -71,7 +71,8 @@ export const raceView = {
   duckCount: 4,
   follow: true, // camera glides after the leaders
   ride: -1, // the duck the camera rides (and the arrow keys steer), or −1
-  rideView: 'first' as 'first' | 'chase', // from its head, or from just behind
+  rideView: 'first' as 'first' | 'third', // from its head, or from behind and above
+  rideDistance: 8, // third person: how far behind (the mouse wheel changes it)
   steer: { turn: 0, paddle: 0 }, // held keys: turn +1 left / −1 right, paddle 0/1
 }
 
@@ -102,8 +103,10 @@ function steer(o: Obstacle, dt: number) {
 }
 
 // The ride camera: from the duck's head looking ahead (the duck itself hidden),
-// or from behind and above it. Its yaw follows the duck's heading smoothly, so a
-// spinning duck turns the view without jolting it.
+// or third person from behind and above it, looking a little past it. Its yaw
+// follows the duck's heading smoothly, so a spinning duck turns the view without
+// jolting it.
+export const RIDE_DISTANCE = [3, 20]
 function rideView(o: Obstacle, yaw: number) {
   const f = [Math.cos(yaw), 0, Math.sin(yaw)]
   const c = o.center
@@ -112,9 +115,10 @@ function rideView(o: Obstacle, yaw: number) {
     const eye = [c[0] + f[0] * hx * 0.9, c[1] + hy * 2 + 0.4, c[2] + f[2] * hx * 0.9]
     return { eye, target: [eye[0] + f[0] * 10, eye[1] - 1.2, eye[2] + f[2] * 10], fov: 75 }
   }
+  const back = raceView.rideDistance
   return {
-    eye: [c[0] - f[0] * 5, c[1] + 2.5, c[2] - f[2] * 5],
-    target: [c[0] + f[0] * 4, c[1] + 0.5, c[2] + f[2] * 4],
+    eye: [c[0] - f[0] * back, c[1] + 0.2 + back * 0.5, c[2] - f[2] * back],
+    target: [c[0] + f[0] * 5, c[1], c[2] + f[2] * 5],
     fov: 60,
   }
 }
