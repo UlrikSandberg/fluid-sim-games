@@ -125,8 +125,8 @@ ledge as a waterfall and winds on along the lower reach. The default course has 
   upper and lower depth. The panel estimates the particle count before you apply.
 - **Water** (live): current speed and pull, gravity, stiffness, XSPH ε, and dt with
   its CFL limit.
-- **Ducks:** racers (1–8), Start race (`S`), Add one (`D`), Clear, density (live),
-  size (next start).
+- **Racers:** how many (1–8), their names, who does the chore, follow camera.
+- **Ducks:** Start race (`S`), Add one (`D`), Clear, density (live), size (next start).
 
 **Start:** Start race hangs the ducks side by side in one row across the river, under
 a wooden gate bar (perpendicular to the channel, so it works on a bend), just above
@@ -160,9 +160,17 @@ their reaches along the line between them, which is exact face-on, so ducks can 
 side by side; overlaps are separated by mass and bounced with restitution). An 8-duck race runs at 60 fps; the ducks jostle over the
 waterfall and spread out along the lower reach.
 
-Next: the rest of the race rules (finish line, winner, names, a camera that follows
-the leaders), then random swirls, obstacles and gravity-flip power-ups. Known roughness:
-some splash where recycled water re-enters.
+**Race rules:** each duck has a name (the panel's Racers section, next to its colour;
+remembered in this browser). A chequered finish line spans the river near the end;
+ducks are timed across it, and a live leaderboard ranks finished ducks by time and
+the rest by distance down the course. The race ends when every duck is in, or after
+2 minutes (the rest ranked by distance), with a results card: the winner, the
+placings, and who does the chore (last place or the winner, a panel setting). The
+follow camera (`F`, on by default) looks at the start line during the countdown,
+then glides after the leading pack, then rests on the finish.
+
+Next: random swirls, obstacles and gravity-flip power-ups. Known roughness: some
+splash where recycled water re-enters.
 
 ## Layout
 

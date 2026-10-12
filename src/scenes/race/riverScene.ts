@@ -36,6 +36,11 @@ export const riverLayout: RiverLayout = structuredClone(defaultRiverLayout)
 
 export const DEFAULT_CURRENT = { speed: 3, rate: 1.5 }
 const EXIT_MARGIN = 3 // water within this of the far end is recycled
+
+// The finish line's x: clear of the recycling zone (where water is lifted away).
+export function finishX(l: RiverLayout = riverLayout): number {
+  return l.length - EXIT_MARGIN - 3
+}
 const SIDE_MARGIN = 1 // ground between the outermost bank and the domain's side
 
 // Geometry derived from a layout: domain, centreline, banks.

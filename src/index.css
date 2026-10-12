@@ -333,3 +333,91 @@ body,
   text-shadow: 0 4px 24px rgb(0 0 0 / 0.6);
   pointer-events: none;
 }
+
+.standings {
+  position: absolute;
+  top: 56px;
+  left: 8px;
+  min-width: 190px;
+  padding: 6px 8px;
+  font-size: 12px;
+  background: rgb(0 0 0 / 0.5);
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.standing,
+.results li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0;
+}
+
+.standing .name {
+  flex: 1;
+}
+
+.standing .status,
+.results .status {
+  margin-left: auto;
+  color: #8b949e;
+}
+
+.dot {
+  display: inline-block;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.results {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(340px, calc(100% - 32px));
+  padding: 16px 20px;
+  font-size: 13px;
+  background: #161b22;
+  border: 1px solid #f2c230;
+  border-radius: 8px;
+  box-shadow: 0 8px 40px rgb(0 0 0 / 0.6);
+}
+
+.results h2 {
+  margin: 0 0 10px;
+  font-size: 20px;
+}
+
+.results ol {
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.results .chore {
+  margin: 0 0 12px;
+}
+
+.results button {
+  width: 100%;
+  padding: 6px;
+  font: inherit;
+  color: inherit;
+  background: #21262d;
+  border: 1px solid #3a4552;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.panel .racer {
+  grid-template-columns: 12px 1fr;
+}
+
+.panel .racer input[type='text'] {
+  grid-column: 2 / 4;
+  min-width: 0;
+  padding: 2px 4px;
+}

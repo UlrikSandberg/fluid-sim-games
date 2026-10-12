@@ -78,6 +78,10 @@ export class Renderer3D {
   private readonly ducks: THREE.Group[] = []
   private readonly wood = new THREE.MeshLambertMaterial({ color: 0x8a5a2b })
   private gate: THREE.Group | null = null
+  private finish: THREE.Group | null = null
+  private readonly checker: THREE.MeshLambertMaterial
+  private readonly followGoal = new THREE.Vector3()
+  private following = false
   private readonly resizeObserver: ResizeObserver
   private readonly container: HTMLElement
 
@@ -121,6 +125,22 @@ export class Renderer3D {
     this.tank.add(inner)
     this.scene.add(this.tank)
     this.surface = new WaterSurface3D(this.mesh, radius, sunDirection)
+
+    // Chequered texture for the finish banner.
+    const canvas = document.createElement('canvas')
+    canvas.width = 64
+    canvas.height = 16
+    const g = canvas.getContext('2d')!
+    for (let i = 0; i < 16; i++) {
+      for (let j = 0; j < 4; j++) {
+        g.fillStyle = (i + j) % 2 === 0 ? '#111111' : '#f5f5f5'
+        g.fillRect(i * 4, j * 4, 4, 4)
+      }
+    }
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.magFilter = THREE.NearestFilter
+    texture.colorSpace = THREE.SRGBColorSpace
+    this.checker = new THREE.MeshLambertMaterial({ map: texture, side: THREE.DoubleSide })
 
     // The floor sits below the tank's reach in any orientation.
     const halfDiagonal = Math.hypot(x1 - x0, y1 - y0, z1 - z0) / 2
@@ -252,6 +272,41 @@ export class Renderer3D {
     this.gate = gate
   }
 
+  // Shows the finish line, a chequered banner between `ends` (tank coordinates,
+  // at the banner's bottom) on two posts, or removes it with null.
+  setFinish(ends: number[][] | null) {
+    if (this.finish) {
+      this.finish.removeFromParent()
+      this.finish.traverse((child) => {
+        if (child instanceof THREE.Mesh) child.geometry.dispose()
+      })
+      this.finish = null
+    }
+    if (!ends) return
+    const [a, b] = ends.map((e) => new THREE.Vector3(e[0], e[1], e[2]))
+    const finish = new THREE.Group()
+    const length = a.distanceTo(b)
+    const banner = new THREE.Mesh(new THREE.PlaneGeometry(length, 1), this.checker)
+    banner.position.copy(a).add(b).multiplyScalar(0.5)
+    banner.position.y += 0.5
+    banner.rotation.y = -Math.atan2(b.z - a.z, b.x - a.x)
+    finish.add(banner)
+    for (const end of [a, b]) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 5, 10), this.wood)
+      post.position.set(end.x, end.y - 1.5, end.z)
+      finish.add(post)
+    }
+    this.body.parent!.add(finish)
+    this.finish = finish
+  }
+
+  // Glides the camera after a point (tank coordinates; the race tank is unrotated)
+  // keeping the current viewing angle, or stops following with null.
+  follow(point: number[] | null) {
+    this.following = point !== null
+    if (point) this.followGoal.set(point[0], point[1], point[2])
+  }
+
   // Tank orientation as a quaternion [w, x, y, z] (tank → world).
   setTankOrientation(q: number[]) {
     this.tank.quaternion.set(q[1], q[2], q[3], q[0])
@@ -270,6 +325,12 @@ export class Renderer3D {
 
   // `water`: draw the fluid as a shaded surface (see waterSurface3d.ts) instead of spheres.
   render(water: boolean) {
+    if (this.following) {
+      // Move the orbit target (and the camera with it) a little toward the goal each frame.
+      const step = this.followGoal.clone().sub(this.controls.target).multiplyScalar(0.04)
+      this.controls.target.add(step)
+      this.camera.position.add(step)
+    }
     this.controls.update() // applies damping
     if (water) this.surface.render(this.gl, this.scene, this.camera, this.mesh)
     else this.gl.render(this.scene, this.camera)
@@ -297,7 +358,10 @@ export class Renderer3D {
     for (const b of this.banks) b.geometry.dispose()
     for (const d of this.ducks) disposeDuck(d)
     this.setGate(null)
+    this.setFinish(null)
     this.wood.dispose()
+    this.checker.map?.dispose()
+    this.checker.dispose()
     this.stone.dispose()
     this.ground.dispose()
     this.bounds.dispose()

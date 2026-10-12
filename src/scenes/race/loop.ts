@@ -5,10 +5,17 @@ import { Renderer3D } from '../../render/renderer3d'
 import { getColorMode, writeColors, type ColorModeId, type RenderStyle } from '../../render/colorModes'
 import { GpuEngine } from '../fluid3d/engines'
 import {
-  DEFAULT_CURRENT, bankLines, courseOf, riverBoxes, riverLayout, riverParams, riverScene,
+  DEFAULT_CURRENT, bankLines, courseOf, finishX, riverBoxes, riverLayout, riverParams, riverScene,
 } from './riverScene'
 
-export type RacePhase = 'idle' | 'countdown' | 'racing'
+export type RacePhase = 'idle' | 'countdown' | 'racing' | 'finished'
+
+// A duck's place in the race: finished ducks by time, the rest by distance.
+export interface Standing {
+  index: number // which duck (its name and colour index)
+  finishTime: number | null // seconds after the start, once across the line
+  progress: number // 0 at the start line, 1 at the finish
+}
 
 export interface RaceStats {
   fps: number
@@ -17,7 +24,8 @@ export interface RaceStats {
   ducks: number
   phase: RacePhase
   countdown: number // seconds left before the gate opens (countdown phase)
-  sinceStart: number // seconds since the gate opened (racing phase)
+  sinceStart: number // seconds since the gate opened (racing and finished phases)
+  standings: Standing[] // best first
   status: 'starting' | 'running' | 'paused' | 'no-webgpu'
 }
 
@@ -40,7 +48,10 @@ export const raceView = {
   gravity: 9.8,
   duckSize: [1.6, 1, 1.2],
   duckCount: 4,
+  follow: true, // camera glides after the leaders
 }
+
+const MAX_RACE = 120 // seconds; ducks still out by then are ranked by distance
 
 const STATS_INTERVAL_MS = 250
 const COUNTDOWN = 3 // seconds of simulated time before the gate opens
@@ -109,6 +120,59 @@ function startLine(count: number) {
   return { positions, size, gate }
 }
 
+// The finish banner's ends: across the channel at finishX, its bottom just above
+// the lower reach's bank tops.
+function finishLine(): number[][] {
+  const c = courseOf(riverLayout)
+  const x = finishX(riverLayout)
+  const s = c.slope(x)
+  const norm = Math.hypot(1, s)
+  const reach = c.halfWidth + 0.5
+  const y = riverLayout.lowerDepth + 3
+  const zc = c.centerline(x)
+  return [
+    [x + (reach * s) / norm, y, zc - reach / norm],
+    [x - (reach * s) / norm, y, zc + reach / norm],
+  ]
+}
+
+// Best first: finished ducks by finish time, then the rest by how far down the
+// course they are.
+function standings(bodies: Obstacle[], finishTimes: (number | null)[]): Standing[] {
+  const start = START_X
+  const span = finishX(riverLayout) - start
+  return bodies
+    .map((o, index) => ({
+      index,
+      finishTime: finishTimes[index] ?? null,
+      progress: Math.min(1, Math.max(0, (o.center[0] - start) / span)),
+    }))
+    .sort((a, b) => {
+      if (a.finishTime != null && b.finishTime != null) return a.finishTime - b.finishTime
+      if (a.finishTime != null) return -1
+      if (b.finishTime != null) return 1
+      return b.progress - a.progress
+    })
+}
+
+// Where the camera looks: the start line during the countdown, then the middle of
+// the leading pack (the first three still racing), and the finish once it's over.
+function followPoint(bodies: Obstacle[], phase: RacePhase, finishTimes: (number | null)[]): number[] | null {
+  const c = courseOf(riverLayout)
+  if (phase === 'idle' || bodies.length === 0) return null
+  if (phase === 'countdown') return [START_X + 8, riverLayout.ledgeHeight, c.centerline(START_X + 8)]
+  if (phase === 'finished') {
+    const x = finishX(riverLayout)
+    return [x, riverLayout.lowerDepth, c.centerline(x)]
+  }
+  const racing = bodies.filter((_, i) => finishTimes[i] == null).sort((a, b) => b.center[0] - a.center[0]).slice(0, 3)
+  const pack = racing.length > 0 ? racing : bodies
+  const mean = [0, 1, 2].map((d) => pack.reduce((a, o) => a + o.center[d], 0) / pack.length)
+  // A little ahead of the pack, but not past the course's end.
+  const x = Math.min(mean[0] + 6, finishX(riverLayout))
+  return [x, mean[1], c.centerline(x)]
+}
+
 // The river race's loop: the GPU solver running the course from riverScene,
 // rendered with the shared 3D renderer. GPU only: a river this size isn't
 // playable on the CPU solver.
@@ -121,6 +185,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   let phase: RacePhase = 'idle'
   let countdown = 0
   let sinceStart = 0
+  let finishTimes: (number | null)[] = []
 
   const start = () => {
     const mine = ++generation
@@ -149,6 +214,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       for (const box of riverBoxes(riverLayout)) {
         renderer.addSolid([box.min[0], box.min[1], box.min[2] + 0.02], [box.max[0], box.max[1], box.max[2] - 0.02])
       }
+      renderer.setFinish(finishLine())
       const [left, right] = bankLines(riverLayout)
       // Banks follow the water: just above the upper reach, stepping down at the
       // waterfall to just above the lower reach (the physical banks go to the top).
@@ -199,11 +265,17 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         }
       } else if (phase === 'racing') {
         sinceStart += simulated
+        const line = finishX(riverLayout)
+        engine.bodies.forEach((o, i) => {
+          if (finishTimes[i] == null && o.center[0] >= line) finishTimes[i] = sinceStart
+        })
+        if (finishTimes.every((t) => t != null) || sinceStart >= MAX_RACE) phase = 'finished'
       }
     }
 
     if (engine && renderer) {
       renderer.setDucks(engine.bodies)
+      renderer.follow(raceView.follow ? followPoint(engine.bodies, phase, finishTimes) : null)
       view = engine.view()
       if (view) {
         renderer.updatePositions(view.pos, view.n)
@@ -224,6 +296,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         phase,
         countdown,
         sinceStart,
+        standings: standings(engine?.bodies ?? [], finishTimes),
         status: noWebGpu ? 'no-webgpu' : !engine ? 'starting' : paused ? 'paused' : 'running',
       })
       frames = 0
@@ -251,17 +324,21 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       renderer?.setGate(line.gate)
       phase = 'countdown'
       countdown = COUNTDOWN
+      finishTimes = engine.bodies.map(() => null)
     },
     dropDuck() {
       // Just downstream of the inlet, above the upper reach, on the centreline.
       const x = 3
       const y = riverLayout.ledgeHeight + riverLayout.upperDepth + raceView.duckSize[1] + 1
-      engine?.addBody({ center: [x, y, courseOf(riverLayout).centerline(x)], size: raceView.duckSize })
+      if (engine?.addBody({ center: [x, y, courseOf(riverLayout).centerline(x)], size: raceView.duckSize })) {
+        finishTimes.push(null) // a late entrant still races
+      }
     },
     clearDucks() {
       engine?.removeBody()
       renderer?.setGate(null)
       phase = 'idle'
+      finishTimes = []
     },
     dispose() {
       generation++

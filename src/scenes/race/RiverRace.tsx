@@ -4,15 +4,20 @@ import { colorModes, getColorMode, type ColorModeId, type RenderStyle } from '..
 import { Hud } from '../../ui/Hud'
 import { Legend } from '../../ui/Legend'
 import { Section, Slider } from '../../ui/controls'
-import { raceParams, raceView, startRaceLoop, type RaceController } from './loop'
+import { raceParams, raceView, startRaceLoop, type RaceController, type Standing } from './loop'
+import { duckColor, duckName, racers, renderStandings, saveRacers } from './racers'
 import { defaultRiverLayout, estimateParticles, riverLayout, type RiverLayout } from './riverScene'
 
-// The game scene (work in progress): a winding river with a waterfall on the GPU
-// solver. Ducks, randomness and race rules come next.
+// The game scene: named ducks race down a winding river with a waterfall (GPU
+// solver). A gate countdown starts it, a finish line ends it, and the results say
+// who does the chore. Random swirls, obstacles and power-ups come next.
 export function RiverRace() {
   const canvasHostRef = useRef<HTMLDivElement>(null)
   const hudRef = useRef<HTMLDivElement>(null)
   const countdownRef = useRef<HTMLDivElement>(null)
+  const standingsRef = useRef<HTMLDivElement>(null)
+  const phaseRef = useRef('idle')
+  const [results, setResults] = useState<Standing[] | null>(null)
   const controllerRef = useRef<RaceController | null>(null)
   const [paused, setPaused] = useState(false)
   const [noWebGpu, setNoWebGpu] = useState(false)
@@ -31,11 +36,21 @@ export function RiverRace() {
         countdownRef.current.textContent = text
         countdownRef.current.style.display = text ? 'block' : 'none'
       }
+      if (standingsRef.current) {
+        const show = s.phase === 'racing' || s.phase === 'countdown'
+        standingsRef.current.style.display = show ? 'block' : 'none'
+        if (show) renderStandings(standingsRef.current, s.standings)
+      }
+      // React only hears about the race when it ends (and when a new one starts).
+      if (s.phase !== phaseRef.current) {
+        phaseRef.current = s.phase
+        setResults(s.phase === 'finished' ? s.standings : null)
+      }
       if (hudRef.current) {
         hudRef.current.textContent =
           `GPU · ${s.fps.toFixed(0)} fps · ${s.particles.toLocaleString()} particles · ${s.ducks} ducks · ` +
           (s.status === 'running' ? `${s.substeps.toFixed(1)} substeps/frame` : s.status) +
-          `\nS: start race · D: add a duck · drag: orbit · right-drag: pan · wheel: zoom · Space: pause`
+          `\nS: start race · D: add a duck · F: follow camera · drag: orbit · wheel: zoom · Space: pause`
       }
     })
     controllerRef.current = controller
@@ -68,6 +83,7 @@ export function RiverRace() {
       if (mode) changeColorMode(mode.id)
       else if (e.code === 'KeyD') controllerRef.current?.dropDuck()
       else if (e.code === 'KeyS') controllerRef.current?.startRace(raceView.duckCount)
+      else if (e.code === 'KeyF') raceView.follow = !raceView.follow
       else if (e.code === 'KeyV') changeStyle(style === 'water' ? 'particles' : 'water')
       else if (e.code === 'Space') {
         e.preventDefault()
@@ -83,6 +99,10 @@ export function RiverRace() {
       <div ref={canvasHostRef} className="canvas-host canvas-3d" />
       <Hud ref={hudRef} />
       <div ref={countdownRef} className="countdown" style={{ display: 'none' }} />
+      <div ref={standingsRef} className="standings" style={{ display: 'none' }} />
+      {results && (
+        <Results standings={results} onAgain={() => controllerRef.current?.startRace(raceView.duckCount)} />
+      )}
       {noWebGpu && (
         <div className="notice">
           The river needs WebGPU (recent Chrome, Edge or Safari). The 3D Sandbox runs on the CPU.
@@ -100,6 +120,35 @@ export function RiverRace() {
           onStyle={changeStyle}
         />
       </div>
+    </div>
+  )
+}
+
+// The end-of-race card: the winner, the placings, and who does the chore.
+function Results({ standings, onAgain }: { standings: Standing[]; onAgain: () => void }) {
+  const winner = standings[0]
+  const chore = racers.chore === 'last' ? standings[standings.length - 1] : winner
+  return (
+    <div className="results">
+      <h2>
+        🏆 <span style={{ color: duckColor(winner.index) }}>{duckName(winner.index)}</span> wins!
+      </h2>
+      <ol>
+        {standings.map((s) => (
+          <li key={s.index}>
+            <span className="dot" style={{ background: duckColor(s.index) }} />
+            {duckName(s.index)}
+            <span className="status">
+              {s.finishTime != null ? `${s.finishTime.toFixed(1)} s` : `${Math.round(s.progress * 100)}% (out of time)`}
+            </span>
+          </li>
+        ))}
+      </ol>
+      <p className="chore">
+        🧽 <strong style={{ color: duckColor(chore.index) }}>{duckName(chore.index)}</strong> does the chore
+        {standings.length > 1 && (racers.chore === 'last' ? ' (last place)' : ' (the winner)')}.
+      </p>
+      <button onClick={onAgain}>Race again (S)</button>
     </div>
   )
 }
@@ -185,9 +234,41 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
         </p>
       </Section>
 
-      <Section title="Ducks">
+      <Section title="Racers">
         <Slider label="Racers" value={raceView.duckCount} min={1} max={8} step={1} format={(v) => v.toFixed(0)}
           onChange={(v) => update(() => (raceView.duckCount = v))} />
+        {racers.names.slice(0, raceView.duckCount).map((name, i) => (
+          <label key={i} className="row racer">
+            <span className="dot" style={{ background: duckColor(i) }} />
+            <input type="text" value={name} maxLength={24} aria-label={`Duck ${i + 1} name`}
+              onChange={(e) => update(() => {
+                racers.names[i] = e.target.value
+                saveRacers()
+              })} />
+          </label>
+        ))}
+        <div className="row">
+          <span>Chore</span>
+          <div className="toggle" role="radiogroup">
+            {(['last', 'winner'] as const).map((who) => (
+              <button key={who} role="radio" aria-checked={racers.chore === who}
+                className={racers.chore === who ? 'on current' : undefined}
+                onClick={() => update(() => {
+                  racers.chore = who
+                  saveRacers()
+                })}>
+                {who === 'last' ? 'Last place' : 'Winner'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <label className="row">
+          <span>Follow</span>
+          <input type="checkbox" checked={raceView.follow} onChange={(e) => update(() => (raceView.follow = e.target.checked))} />
+        </label>
+      </Section>
+
+      <Section title="Ducks">
         <div className="buttons">
           <button onClick={() => controller()?.dropDuck()} title="D">
             Add one
