@@ -13,7 +13,7 @@ randomness that makes every race different.
 - [x] **3. Swirls.** Random whirlpools: a rotating current around a point that can trap
   a duck or fling it ahead. Shader-side (like the current), with a visible ring on
   the water.
-- [ ] **4. Power-ups.** Floating pickups along the course; the first duck to touch one
+- [x] **4. Power-ups.** Floating pickups along the course; the first duck to touch one
   sets it off:
   - **Flip:** that duck's gravity reverses for a moment, so it hops out of the water
     and over whatever is ahead, then drops back.
@@ -22,5 +22,5 @@ randomness that makes every race different.
     float up), then everything splashes down.
 - [x] **Lanes shuffled each race.** Found while testing swirls: two races in a row
   finished in the same order, because each duck always started in the same lane.
-- [ ] **5. Event feed.** "Alex grabbed Zero-G!" messages on screen, so you can see why
+- [x] **5. Event feed.** "Alex grabbed Zero-G!" messages on screen, so you can see why
   the race just changed.

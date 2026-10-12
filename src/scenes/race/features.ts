@@ -95,6 +95,27 @@ export function generateFeatures(l: RiverLayout) {
     features.swirls.push({ x, z, radius, strength: (Math.random() < 0.5 ? -1 : 1) * rand(4, 7) })
   }
   features.pickups = []
+  let zeroG = 0
+  for (let tries = 0; tries < 200 && features.pickups.length < raceSettings.pickups; tries++) {
+    const x = freeX(l, 5)
+    if (x == null) break
+    const z = c.centerline(x) + rand(-1, 1) * (c.halfWidth - 1.5)
+    const clear =
+      features.rocks.every((r) => Math.hypot((r.min[0] + r.max[0]) / 2 - x, (r.min[2] + r.max[2]) / 2 - z) > 3) &&
+      features.pickups.every((q) => Math.hypot(q.pos[0] - x, q.pos[2] - z) > 4)
+    if (!clear) continue
+    // At most one Zero-G per race: it changes everything for everyone.
+    const kinds: PickupKind[] = zeroG > 0 ? ['flip', 'boost'] : ['flip', 'boost', 'zeroG']
+    const kind = pick(kinds)
+    if (kind === 'zeroG') zeroG++
+    features.pickups.push({ kind, pos: [x, waterAt(l, x) + 0.9, z], taken: false })
+  }
+}
+
+export const PICKUP_INFO: Record<PickupKind, { label: string; color: number }> = {
+  flip: { label: '⬆ Flip', color: 0xb07cff },
+  boost: { label: '⚡ Boost', color: 0x7ee787 },
+  zeroG: { label: '🌌 Zero-G', color: 0x54d6ff },
 }
 
 // How fast (1/s) a duck inside a swirl turns toward the swirl's rotation: slower

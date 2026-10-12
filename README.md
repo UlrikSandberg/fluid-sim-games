@@ -127,6 +127,7 @@ ledge as a waterfall and winds on along the lower reach. The default course has 
   upper and lower depth. The panel estimates the particle count before you apply.
 - **Water** (live): current speed and pull, gravity, stiffness, XSPH ε, and dt with
   its CFL limit.
+- **Race** (each start): new course, rocks, swirls, power-ups.
 - **Racers:** how many (1–8), their names, who does the chore, follow camera.
 - **Ducks:** Start race (`S`), Add one (`D`), Clear, density (live), size (next start).
 
@@ -171,8 +172,24 @@ placings, and who does the chore (last place or the winner, a panel setting). Th
 follow camera (`F`, on by default) looks at the start line during the countdown,
 then glides after the leading pack, then rests on the finish.
 
-Next: random swirls, obstacles and gravity-flip power-ups. Known roughness: some
-splash where recycled water re-enters.
+**Randomness** (`features.ts`, the panel's Race section; all drawn when a race
+starts, see `docs/race-todo.md`):
+- **New course each race** (toggle): length, bends, bend size, waterfall height.
+- **Rocks** (0–6): solid boxes in the river, clear of the start, the waterfall lip and
+  the finish, always leaving a passage. Water flows around them; ducks bounce off
+  (`solidConstraint`).
+- **Swirls** (0–4): whirlpools that turn the water's horizontal velocity toward a
+  rotation about a point (fastest mid-radius) with a gentle inward pull, shown as
+  spinning spiral discs. Ducks also feel them directly, so a caught duck circles.
+- **Power-ups** (0–6): floating gems; the first duck to touch one sets it off.
+  ⬆ Flip reverses that duck's gravity (×−0.6) for 1.5 s, so it hops out and over;
+  ⚡ Boost kicks it downstream; 🌌 Zero-G (at most one per race) switches gravity off
+  for 2 s for all the water and every duck, then everything splashes down. An event
+  feed says who grabbed what.
+- **Lanes** are dealt at random each race: with a fixed order, two races in a row
+  finished in identical order, because the course favours some lanes.
+
+Known roughness: some splash where recycled water re-enters.
 
 ## Layout
 

@@ -111,6 +111,9 @@ export class Renderer3D {
   private readonly swirlDiscs: { mesh: THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>; strength: number }[] = []
   private swirlTexture: THREE.CanvasTexture | null = null
   private lastFrame = performance.now()
+  private readonly gems: THREE.Mesh<THREE.OctahedronGeometry, THREE.MeshBasicMaterial>[] = []
+  private gemKey = ''
+  private gemClock = 0
   private readonly wood = new THREE.MeshLambertMaterial({ color: 0x8a5a2b })
   private gate: THREE.Group | null = null
   private finish: THREE.Group | null = null
@@ -358,6 +361,29 @@ export class Renderer3D {
     }
   }
 
+  // Shows the power-ups as glowing gems (tank coordinates), spinning and bobbing;
+  // taken ones are hidden. Rebuilt only when the set of pickups changes.
+  setPickups(pickups: { pos: number[]; color: number; taken: boolean }[]) {
+    const key = pickups.map((q) => `${q.pos.join(',')}:${q.color}`).join('|')
+    if (key !== this.gemKey) {
+      for (const g of this.gems) {
+        g.removeFromParent()
+        g.geometry.dispose()
+        g.material.dispose()
+      }
+      this.gems.length = 0
+      for (const q of pickups) {
+        const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.45), new THREE.MeshBasicMaterial({ color: q.color }))
+        gem.position.set(q.pos[0], q.pos[1], q.pos[2])
+        gem.userData.baseY = q.pos[1]
+        this.body.parent!.add(gem)
+        this.gems.push(gem)
+      }
+      this.gemKey = key
+    }
+    pickups.forEach((q, i) => (this.gems[i].visible = !q.taken))
+  }
+
   // Glides the camera after a point (tank coordinates; the race tank is unrotated)
   // keeping the current viewing angle, or stops following with null.
   follow(point: number[] | null) {
@@ -389,6 +415,11 @@ export class Renderer3D {
     // Spin the swirl discs with their swirls. The disc is laid flat by −90° about x,
     // so its local z turns the opposite way to the water's rotation about +y.
     for (const d of this.swirlDiscs) d.mesh.rotation.z -= d.strength * 0.15 * dt
+    this.gemClock += dt
+    this.gems.forEach((g, i) => {
+      g.rotation.y += 2 * dt
+      g.position.y = g.userData.baseY + 0.2 * Math.sin(this.gemClock * 3 + i)
+    })
     if (this.following) {
       // Move the orbit target (and the camera with it) a little toward the goal each frame.
       const step = this.followGoal.clone().sub(this.controls.target).multiplyScalar(0.04)
@@ -424,6 +455,7 @@ export class Renderer3D {
     this.setGate(null)
     this.setFinish(null)
     this.setSwirls([])
+    this.setPickups([])
     this.swirlTexture?.dispose()
     this.wood.dispose()
     this.checker.map?.dispose()

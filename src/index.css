@@ -421,3 +421,21 @@ body,
   min-width: 0;
   padding: 2px 4px;
 }
+
+.events {
+  position: absolute;
+  left: 8px;
+  bottom: 44px;
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.event {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 3px 8px;
+  background: rgb(0 0 0 / 0.55);
+  border-radius: 4px;
+}

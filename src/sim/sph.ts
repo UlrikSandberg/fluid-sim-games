@@ -50,6 +50,7 @@ export interface Obstacle {
   local: Float32Array // boundary particle offsets in the body frame, stride dim
   force: Float64Array // fluid force on the body over one step (3 components)
   torque: Float64Array // fluid torque about the centre over one step
+  gravityScale?: number // multiplies gravity for this body (default 1; −1 flips it)
 }
 
 // The obstacle's rotation angle about z (what a 2D view needs).
@@ -580,7 +581,8 @@ export function integrateObstacle(o: Obstacle, p: Params, frame?: FrameMotion) {
   } else {
     const mass = obstacleMass(p, o.halfSize)
     const inertia = boxInertia(mass, o.halfSize)
-    const acc = o.vel.map((_, d) => o.force[d] / mass + p.gravity[d])
+    const g = o.gravityScale ?? 1
+    const acc = o.vel.map((_, d) => o.force[d] / mass + p.gravity[d] * g)
     if (frame) frameAccel(frame, o.center, o.vel, 0, dim, acc, 0)
     for (let d = 0; d < dim; d++) {
       o.vel[d] += acc[d] * dt

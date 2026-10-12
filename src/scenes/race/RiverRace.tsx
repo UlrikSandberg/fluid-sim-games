@@ -6,7 +6,7 @@ import { Legend } from '../../ui/Legend'
 import { Section, Slider } from '../../ui/controls'
 import { courseState, raceParams, raceView, startRaceLoop, type RaceController, type Standing } from './loop'
 import { raceSettings } from './features'
-import { duckColor, duckName, racers, renderStandings, saveRacers } from './racers'
+import { duckColor, duckName, racers, renderEvents, renderStandings, saveRacers } from './racers'
 import { defaultRiverLayout, estimateParticles, riverLayout, type RiverLayout } from './riverScene'
 
 // The game scene: named ducks race down a winding river with a waterfall (GPU
@@ -17,6 +17,7 @@ export function RiverRace() {
   const hudRef = useRef<HTMLDivElement>(null)
   const countdownRef = useRef<HTMLDivElement>(null)
   const standingsRef = useRef<HTMLDivElement>(null)
+  const eventsRef = useRef<HTMLDivElement>(null)
   const phaseRef = useRef('idle')
   const [results, setResults] = useState<Standing[] | null>(null)
   const [, setPhaseTick] = useState(0) // re-renders the panel when a race changes phase (e.g. a new course)
@@ -33,11 +34,15 @@ export function RiverRace() {
       if (s.status === 'no-webgpu') setNoWebGpu(true)
       // 3, 2, 1 while the ducks hang at the gate, then GO! for a second.
       if (countdownRef.current) {
-        const text =
-          s.phase === 'countdown' ? String(Math.max(1, Math.ceil(s.countdown))) : s.phase === 'racing' && s.sinceStart < 1 ? 'GO!' : ''
+        const zeroG = s.zeroG > 0
+        const text = s.phase === 'countdown'
+          ? String(Math.max(1, Math.ceil(s.countdown)))
+          : zeroG ? 'ZERO-G!' : s.phase === 'racing' && s.sinceStart < 1 ? 'GO!' : ''
         countdownRef.current.textContent = text
         countdownRef.current.style.display = text ? 'block' : 'none'
+        countdownRef.current.style.color = zeroG ? '#54d6ff' : ''
       }
+      if (eventsRef.current) renderEvents(eventsRef.current, s.events, 4)
       if (standingsRef.current) {
         const show = s.phase === 'racing' || s.phase === 'countdown'
         standingsRef.current.style.display = show ? 'block' : 'none'
@@ -103,6 +108,7 @@ export function RiverRace() {
       <Hud ref={hudRef} />
       <div ref={countdownRef} className="countdown" style={{ display: 'none' }} />
       <div ref={standingsRef} className="standings" style={{ display: 'none' }} />
+      <div ref={eventsRef} className="events" />
       {results && (
         <Results standings={results} onAgain={() => controllerRef.current?.startRace(raceView.duckCount)} />
       )}
@@ -212,6 +218,9 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
           onChange={(v) => update(() => (raceSettings.rocks = v))} />
         <Slider label="Swirls" value={raceSettings.swirls} min={0} max={4} step={1} format={(v) => v.toFixed(0)}
           onChange={(v) => update(() => (raceSettings.swirls = v))} />
+        <Slider label="Power-ups" value={raceSettings.pickups} min={0} max={6} step={1} format={(v) => v.toFixed(0)}
+          onChange={(v) => update(() => (raceSettings.pickups = v))} />
+        <p className="note">⬆ Flip · ⚡ Boost · 🌌 Zero-G (at most one)</p>
       </Section>
 
       <Section title="Course (on reset)">

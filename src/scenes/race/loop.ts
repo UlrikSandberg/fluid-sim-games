@@ -7,7 +7,9 @@ import { GpuEngine } from '../fluid3d/engines'
 import {
   DEFAULT_CURRENT, START_X, bankLines, courseOf, finishX, riverBoxes, riverLayout, riverParams, riverScene,
 } from './riverScene'
-import { features, generateFeatures, raceSettings, randomizeCourse, swirlOnDuck, waterAt } from './features'
+import {
+  PICKUP_INFO, features, generateFeatures, raceSettings, randomizeCourse, swirlOnDuck, waterAt, type PickupKind,
+} from './features'
 import type { SolidBox } from '../../sim/sph'
 
 export type RacePhase = 'idle' | 'countdown' | 'racing' | 'finished'
@@ -19,6 +21,13 @@ export interface Standing {
   progress: number // 0 at the start line, 1 at the finish
 }
 
+// A power-up going off: which duck, what, and how long ago (seconds).
+export interface RaceEvent {
+  duck: number
+  kind: PickupKind
+  age: number
+}
+
 export interface RaceStats {
   fps: number
   particles: number
@@ -28,6 +37,8 @@ export interface RaceStats {
   countdown: number // seconds left before the gate opens (countdown phase)
   sinceStart: number // seconds since the gate opened (racing and finished phases)
   standings: Standing[] // best first
+  events: RaceEvent[] // power-ups from the last few seconds, newest first
+  zeroG: number // seconds of Zero-G left (0 when gravity is on)
   status: 'starting' | 'running' | 'paused' | 'no-webgpu'
 }
 
@@ -54,6 +65,14 @@ export const raceView = {
 }
 
 const MAX_RACE = 120 // seconds; ducks still out by then are ranked by distance
+
+// Power-ups (see features.ts for where they float).
+const PICKUP_REACH = 1.4 // horizontal distance from a duck's centre that grabs one
+const FLIP_SCALE = -0.6 // a flipped duck's gravity, as a multiple of normal
+const FLIP_SECONDS = 1.5
+const BOOST_SPEED = 7 // added along the channel
+const ZERO_G_SECONDS = 2
+const EVENT_SECONDS = 4 // how long an event stays in the feed
 
 const STATS_INTERVAL_MS = 250
 const COUNTDOWN = 3 // seconds of simulated time before the gate opens
@@ -238,6 +257,9 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   let countdown = 0
   let sinceStart = 0
   let finishTimes: (number | null)[] = []
+  let flipUntil: number[] = [] // per duck, race time its flip wears off (0 = none)
+  let zeroGUntil = 0
+  let events: { duck: number; kind: PickupKind; at: number }[] = []
 
   const start = () => {
     const mine = ++generation
@@ -246,6 +268,8 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     engine = null
     renderer = null
     phase = 'idle'
+    zeroGUntil = 0
+    events = []
     refreshParams()
     courseState.built = JSON.stringify(riverLayout)
     void GpuEngine.create(raceParams, riverScene(raceParams, riverLayout)).then((created) => {
@@ -302,6 +326,36 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     phase = 'countdown'
     countdown = COUNTDOWN
     finishTimes = engine.bodies.map(() => null)
+    flipUntil = engine.bodies.map(() => 0)
+  }
+
+  // The first duck to reach an untaken pickup sets it off.
+  const grabPickups = (bodies: Obstacle[]) => {
+    const c = courseOf(riverLayout)
+    for (const pickup of features.pickups) {
+      if (pickup.taken) continue
+      const i = bodies.findIndex(
+        (o) => Math.hypot(o.center[0] - pickup.pos[0], o.center[2] - pickup.pos[2]) < PICKUP_REACH &&
+          Math.abs(o.center[1] - pickup.pos[1]) < 2,
+      )
+      if (i < 0) continue
+      pickup.taken = true
+      events.push({ duck: i, kind: pickup.kind, at: sinceStart })
+      const o = bodies[i]
+      const s = c.slope(o.center[0])
+      const norm = Math.hypot(1, s)
+      const along = [1 / norm, 0, s / norm] // downstream
+      if (pickup.kind === 'flip') {
+        o.gravityScale = FLIP_SCALE
+        flipUntil[i] = sinceStart + FLIP_SECONDS
+        for (let d = 0; d < 3; d++) o.vel[d] += 2 * along[d]
+      } else if (pickup.kind === 'boost') {
+        for (let d = 0; d < 3; d++) o.vel[d] += BOOST_SPEED * along[d]
+        o.vel[1] += 1.5
+      } else {
+        zeroGUntil = sinceStart + ZERO_G_SECONDS
+      }
+    }
   }
   start()
 
@@ -327,7 +381,9 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       engine.current.rate = raceView.current.rate
       const pivot = raceParams.domain.min.map((v, d) => (v + raceParams.domain.max[d]) / 2)
       const still: FrameMotion = { omega: [0, 0, 0], alpha: [0, 0, 0], pivot }
-      engine.step(substeps, still, [0, -raceView.gravity, 0])
+      // Zero-G switches gravity off for everything, water and ducks alike.
+      const zeroG = phase === 'racing' && sinceStart < zeroGUntil
+      engine.step(substeps, still, [0, zeroG ? 0 : -raceView.gravity, 0])
       // The countdown runs on simulated time, so pausing holds it.
       const simulated = substeps * raceParams.dt
       if (phase === 'countdown') {
@@ -346,13 +402,19 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         const line = finishX(riverLayout)
         engine.bodies.forEach((o, i) => {
           if (finishTimes[i] == null && o.center[0] >= line) finishTimes[i] = sinceStart
+          if (flipUntil[i] && sinceStart >= flipUntil[i]) {
+            o.gravityScale = 1
+            flipUntil[i] = 0
+          }
         })
+        grabPickups(engine.bodies)
         if (finishTimes.every((t) => t != null) || sinceStart >= MAX_RACE) phase = 'finished'
       }
     }
 
     if (engine && renderer) {
       renderer.setDucks(engine.bodies)
+      renderer.setPickups(features.pickups.map((q) => ({ pos: q.pos, color: PICKUP_INFO[q.kind].color, taken: q.taken })))
       renderer.follow(raceView.follow ? followPoint(engine.bodies, phase, finishTimes) : null)
       view = engine.view()
       if (view) {
@@ -375,6 +437,11 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         countdown,
         sinceStart,
         standings: standings(engine?.bodies ?? [], finishTimes),
+        events: events
+          .filter((e) => sinceStart - e.at < EVENT_SECONDS)
+          .map((e) => ({ duck: e.duck, kind: e.kind, age: sinceStart - e.at }))
+          .reverse(),
+        zeroG: phase === 'racing' ? Math.max(0, zeroGUntil - sinceStart) : 0,
         status: noWebGpu ? 'no-webgpu' : !engine ? 'starting' : paused ? 'paused' : 'running',
       })
       frames = 0
