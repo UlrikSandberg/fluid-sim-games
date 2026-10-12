@@ -406,6 +406,17 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
         {racers.names.slice(0, raceView.duckCount).map((name, i) => (
           <label key={i} className="row racer">
             <span className="dot" style={{ background: duckColor(i) }} />
+            <button className="vessel" title={racers.vessels[i] === 'boat' ? 'a boat (click for a duck)' : 'a duck (click for a boat)'}
+              onClick={(e) => {
+                e.preventDefault()
+                update(() => {
+                  racers.vessels[i] = racers.vessels[i] === 'boat' ? 'duck' : 'boat'
+                  saveRacers()
+                  controller()?.lineUp(raceView.duckCount) // re-hangs the gate before a race
+                })
+              }}>
+              {racers.vessels[i] === 'boat' ? '⛵' : '🦆'}
+            </button>
             <input type="text" value={name} maxLength={24} aria-label={`Duck ${i + 1} name`}
               onChange={(e) => update(() => {
                 racers.names[i] = e.target.value

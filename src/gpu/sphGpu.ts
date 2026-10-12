@@ -358,11 +358,11 @@ export class GpuSph {
       set(base, [...o.center, 0])
       set(base + 1, [...o.vel, 0])
       set(base + 2, [...o.omega, 0])
-      set(base + 3, [...o.halfSize, 0])
+      set(base + 3, [...o.halfSize, o.shape ? o.shape.bow * o.halfSize[0] : 0])
       for (let c = 0; c < 3; c++) set(base + 4 + c, [...axes[c], 0])
       set(base + 7, [...o.center.map((v, d) => v - ext[d] - p.h), 0])
       set(base + 8, [...o.center.map((v, d) => v + ext[d] + p.h), 0])
-      set(base + 9, [...this.bodyRanges[b], 0, 0], true)
+      set(base + 9, [...this.bodyRanges[b], o.shape?.kind === 'hull' ? 1 : 0, 0], true)
     }
     this.device.queue.writeBuffer(this.uniform, 0, this.uniformData)
   }

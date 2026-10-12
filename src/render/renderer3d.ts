@@ -43,6 +43,54 @@ function makeDuck(half: number[], color: number): THREE.Group {
   return duck
 }
 
+// A little boat on a hull with the given half sizes, facing +x: a hull in the
+// racer's colour whose sides curve in to a point from x = bow·hx (the same outline
+// the physics uses), a wooden deck, a white cabin, and a mast with a pennant.
+function makeBoat(half: number[], color: number, bow: number): THREE.Group {
+  const [hx, hy, hz] = half
+  const start = bow * hx
+  const outline = new THREE.Shape()
+  outline.moveTo(-hx, -hz)
+  const steps = 16
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps
+    outline.lineTo(start + t * (hx - start), -hz * (1 - t * t))
+  }
+  for (let i = steps - 1; i >= 0; i--) {
+    const t = i / steps
+    outline.lineTo(start + t * (hx - start), hz * (1 - t * t))
+  }
+  outline.lineTo(-hx, hz)
+  outline.closePath()
+  // The outline is drawn in x–y and extruded along z; turned so y becomes z and
+  // the extrusion goes up.
+  const hull = new THREE.ExtrudeGeometry(outline, { depth: 2 * hy, bevelEnabled: false })
+  hull.rotateX(-Math.PI / 2)
+  hull.translate(0, -hy, 0)
+  const boat = new THREE.Group()
+  const paint = new THREE.MeshLambertMaterial({ color })
+  const wood = new THREE.MeshLambertMaterial({ color: 0xb98a55 })
+  const white = new THREE.MeshLambertMaterial({ color: 0xf2f2f2 })
+  boat.add(new THREE.Mesh(hull, paint))
+  const deck = new THREE.Mesh(new THREE.ShapeGeometry(outline), wood)
+  deck.rotation.x = -Math.PI / 2
+  deck.scale.set(0.92, 0.85, 1)
+  deck.position.y = hy + 0.01
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(0.7 * hx, 0.9 * hy, 1.3 * hz), white)
+  cabin.position.set(-0.4 * hx, hy + 0.45 * hy, 0)
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 3 * hy, 8), wood)
+  mast.position.set(0.15 * hx, hy + 1.5 * hy, 0)
+  const pennant = new THREE.Shape()
+  pennant.moveTo(0, 0)
+  pennant.lineTo(-0.7 * hz, -0.2 * hy)
+  pennant.lineTo(0, -0.4 * hy)
+  const flag = new THREE.Mesh(new THREE.ShapeGeometry(pennant), new THREE.MeshLambertMaterial({ color, side: THREE.DoubleSide }))
+  flag.position.set(0.15 * hx, hy + 3 * hy, 0)
+  boat.add(deck, cabin, mast, flag)
+  boat.userData.half = `${half.join(',')}:hull`
+  return boat
+}
+
 // A white three-armed spiral fading toward the rim, for whirlpool discs.
 function spiralTexture(): THREE.CanvasTexture {
   const size = 256
@@ -291,16 +339,19 @@ export class Renderer3D {
   // Shows a duck per body (tank coordinates, quaternions [w, x, y, z]); duck i
   // gets DUCK_COLORS[i]. Meshes are pooled and rebuilt only if a hull's size changes.
   // `hidden`: a duck not to draw (the one the camera is riding in first person).
-  setDucks(bodies: { center: number[]; halfSize: number[]; q: number[] }[], hidden = -1) {
+  // Bodies with a hull shape are drawn as boats.
+  setDucks(bodies: { center: number[]; halfSize: number[]; q: number[]; shape?: { kind: 'hull'; bow: number } }[], hidden = -1) {
     const parent = this.body.parent!
     bodies.forEach((b, i) => {
       let duck = this.ducks[i]
-      if (!duck || duck.userData.half !== b.halfSize.join(',')) {
+      const key = b.shape ? `${b.halfSize.join(',')}:hull` : b.halfSize.join(',')
+      if (!duck || duck.userData.half !== key) {
         if (duck) {
           parent.remove(duck)
           disposeDuck(duck)
         }
-        duck = makeDuck(b.halfSize, DUCK_COLORS[i % DUCK_COLORS.length])
+        const color = DUCK_COLORS[i % DUCK_COLORS.length]
+        duck = b.shape ? makeBoat(b.halfSize, color, b.shape.bow) : makeDuck(b.halfSize, color)
         parent.add(duck)
         this.ducks[i] = duck
       }

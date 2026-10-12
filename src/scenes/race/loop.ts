@@ -11,7 +11,8 @@ import {
 import {
   FLIP_ZONE_GRAVITY, bedAt, buildCourse, lidAt, locate, pointAt, terrain, waterAt, zoneAt, zoneLid, type CourseGeometry,
 } from './course'
-import type { SolidBox } from '../../sim/sph'
+import type { BodyShape, SolidBox } from '../../sim/sph'
+import { racers, type Vessel } from './racers'
 import { MOVER_COLORS, moverConstraint, updateMovers } from './movers'
 
 // idle: no ducks; setup: ducks hang at the gate while the water settles, until
@@ -138,6 +139,24 @@ const STATS_INTERVAL_MS = 250
 const COUNTDOWN = 3 // seconds of simulated time before the gate opens
 const LANE_GAP = 0.15 // between neighbouring ducks on the start line
 
+// What each kind of racer is to the water, at size 1×: a duck is a box under its
+// mesh with a weighted bottom; a boat is a long, low hull whose bow narrows to a
+// point over its front 40%, with a keel. The ballast (centre of gravity below the
+// centre, see Obstacle) keeps them upright in rough water most of the time; without
+// it both spent half a race on their sides.
+const DUCK_BASE = [1.6, 1, 1.2]
+export const VESSELS: Record<Vessel, { size: number[]; shape?: BodyShape; ballast: number }> = {
+  duck: { size: DUCK_BASE, ballast: 0.5 },
+  boat: { size: [2.6, 0.8, 1.1], shape: { kind: 'hull', bow: 0.2 }, ballast: 0.9 },
+}
+
+// Racer i's hull: its vessel at the panel's size.
+function vesselFor(i: number) {
+  const v = VESSELS[racers.vessels[i] ?? 'duck']
+  const scale = raceView.duckSize[0] / DUCK_BASE[0]
+  return { size: v.size.map((s) => s * scale), shape: v.shape, ballast: v.ballast }
+}
+
 // Rebuilds raceParams for the current course, keeping the live dials.
 function refreshParams() {
   const fresh = riverParams(course, riverLayout.spacing)
@@ -199,11 +218,13 @@ function startLine(count: number) {
   const g = course
   const at = pointAt(g, START_S)
   const across = [-at.tz, at.tx] // (x, z) unit vector across the channel
+  const vessels = Array.from({ length: count }, (_, i) => vesselFor(i))
+  const lane = Math.max(...vessels.map((v) => v.size[2]))
   const available = 2 * g.halfWidth - 0.6
-  const needed = count * raceView.duckSize[2] + (count - 1) * LANE_GAP
+  const needed = count * lane + (count - 1) * LANE_GAP
   const scale = Math.min(1, available / needed)
-  const size = raceView.duckSize.map((v) => v * scale)
-  const y = waterAt(g, START_S) + size[1] / 2 + 0.3
+  for (const v of vessels) v.size = v.size.map((s) => s * scale)
+  const water = waterAt(g, START_S)
   // Lanes are dealt out at random each race: a fixed order hands the same ducks
   // the same lanes every time, and the course's shape favours some lanes (two
   // races in a row finished in identical order before this).
@@ -212,12 +233,13 @@ function startLine(count: number) {
     const j = Math.floor(Math.random() * (i + 1))
     ;[lanes[i], lanes[j]] = [lanes[j], lanes[i]]
   }
-  const positions = lanes.map((lane) => {
-    const offset = (lane - (count - 1) / 2) * (size[2] + LANE_GAP)
-    return [at.x + offset * across[0], y, at.z + offset * across[1]]
+  const racersAt = lanes.map((laneIndex, i) => {
+    const offset = (laneIndex - (count - 1) / 2) * (lane * scale + LANE_GAP)
+    const y = water + vessels[i].size[1] / 2 + 0.3
+    return { ...vessels[i], center: [at.x + offset * across[0], y, at.z + offset * across[1]] }
   })
   const reach = g.halfWidth + 0.5
-  const barY = y + size[1] / 2 + 0.5
+  const barY = water + Math.max(...vessels.map((v) => v.size[1])) + 0.8
   const gate = [
     [at.x - reach * across[0], barY, at.z - reach * across[1]],
     [at.x + reach * across[0], barY, at.z + reach * across[1]],
@@ -225,7 +247,7 @@ function startLine(count: number) {
   // Facing downstream: a turn about +y from +x to the tangent.
   const yaw = Math.atan2(-at.tz, at.tx)
   const q: Quat = [Math.cos(yaw / 2), 0, Math.sin(yaw / 2), 0]
-  return { positions, size, gate, q }
+  return { racers: racersAt, gate, q }
 }
 
 // The finish banner's ends: across the channel at finishS, its bottom a little
@@ -409,7 +431,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     if (!engine) return
     engine.removeBody()
     const line = startLine(count)
-    for (const center of line.positions) engine.addBody({ center, size: line.size })
+    for (const racer of line.racers) engine.addBody(racer)
     // Held at the gate (kinematic at their spot) until the countdown ends.
     for (const o of engine.bodies) {
       o.grabbed = true
@@ -465,7 +487,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
 
   build()
   // For poking at a race from the browser console (and the headless checks).
-  if (import.meta.env.DEV) Object.assign(window, { __race: { features, course: () => course, raceView, renderer: () => renderer } })
+  if (import.meta.env.DEV) Object.assign(window, { __race: { features, course: () => course, raceView, renderer: () => renderer, bodies: () => engine?.bodies ?? [] } })
 
   let accumulator = 0
   let last = performance.now()
@@ -609,8 +631,9 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     dropDuck() {
       // Just downstream of the inlet, above the water, on the centreline.
       const p = pointAt(course, 3)
-      const y = waterAt(course, 3) + raceView.duckSize[1] + 1
-      if (engine?.addBody({ center: [p.x, y, p.z], size: raceView.duckSize })) {
+      const vessel = vesselFor(engine?.bodies.length ?? 0)
+      const y = waterAt(course, 3) + vessel.size[1] + 1
+      if (engine?.addBody({ center: [p.x, y, p.z], ...vessel })) {
         finishTimes.push(null) // a late entrant still races
         flipUntil.push(0)
       }

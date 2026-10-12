@@ -413,11 +413,17 @@ body,
 }
 
 .panel .racer {
-  grid-template-columns: 12px 1fr;
+  grid-template-columns: 12px 26px 1fr;
+}
+
+.panel .racer button.vessel {
+  padding: 0;
+  font-size: 13px;
+  line-height: 18px;
 }
 
 .panel .racer input[type='text'] {
-  grid-column: 2 / 4;
+  grid-column: 3 / 4;
   min-width: 0;
   padding: 2px 4px;
 }

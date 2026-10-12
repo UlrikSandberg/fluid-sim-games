@@ -37,13 +37,13 @@ struct Body {
   center: vec4f,
   vel: vec4f,
   omega: vec4f,
-  half: vec4f,       // half sizes
+  half: vec4f,       // half sizes; w: a hull's x where the bow's taper starts
   rot0: vec4f,       // rotation matrix columns, body → tank
   rot1: vec4f,
   rot2: vec4f,
   boxMin: vec4f,     // bounding box grown by h
   boxMax: vec4f,
-  range: vec4u,      // first boundary particle within the body section, count
+  range: vec4u,      // first boundary particle within the body section, count, shape (0 box, 1 hull)
 }
 
 struct Params {
@@ -460,7 +460,13 @@ fn integrate(@builtin(global_invocation_id) gid: vec3u) {
   for (var b = 0u; b < P.counts.z; b++) {
     let body = P.bodies[b];
     var local = toBody(x - body.center.xyz, b);
-    let depth = body.half.xyz + vec3f(r) - abs(local);
+    var half = body.half.xyz;
+    if (body.range.z == 1u && local.x > body.half.w) {
+      // A hull: the sides curve in to the bow's tip (see shapeHalfWidth in sph.ts).
+      let t = min(1.0, (local.x - body.half.w) / (half.x - body.half.w));
+      half.z *= 1.0 - t * t;
+    }
+    let depth = half + vec3f(r) - abs(local);
     if (all(depth > vec3f(0.0))) {
       var face = 0;
       if (depth.y < depth[face]) { face = 1; }

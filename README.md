@@ -127,6 +127,17 @@ countdown (on simulated time, so pausing holds it), then the gate opens. After t
 results, **Race again here** (`S`) lines up on the same course; **New course** (`N`)
 rolls another.
 
+**Ducks and boats:** each racer floats in a 🦆 duck or a ⛵ boat (the toggle beside
+its name, remembered with the names). A duck is a 1.6 × 1 × 1.2 box under its mesh.
+A boat is a 2.6 × 0.8 × 1.1 hull whose sides curve in to a pointed bow over its
+front 40% (`BodyShape` in `sph.ts`). The water sees that shape: its boundary
+particles follow the hull, the shader's push-out narrows toward the bow, and its
+mass uses the hull's volume. Both carry ballast (centre of gravity below the
+centre: half the half height for a duck, 0.9 for a boat's keel), a righting torque
+from gravity. Without it, ducks and boats both spent about half a race past 90°; with
+it they ride mostly within 25°, except in flip zones, where reversed gravity
+turns them upside down.
+
 **Ride a duck:** `C` cycles the camera: orbit → **first person** from a racer's head
 (that duck isn't drawn) → **third person** from behind and above it (the mouse wheel
 moves it nearer or farther) → orbit. Racers → Ride picks the duck. The view turns

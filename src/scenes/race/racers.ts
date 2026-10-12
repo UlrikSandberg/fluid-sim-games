@@ -7,12 +7,14 @@ import { PICKUP_INFO } from './features'
 // (a convenience; storage may be unavailable, so every access is guarded).
 
 export type ChoreGoesTo = 'last' | 'winner'
+export type Vessel = 'duck' | 'boat'
 
 const DEFAULT_NAMES = ['Quackers', 'Waddles', 'Puddles', 'Dabble', 'Splash', 'Bubbles', 'Nugget', 'Ducky']
 const STORAGE_KEY = 'duck-race:racers'
 
 export const racers = {
   names: DEFAULT_NAMES.slice(),
+  vessels: DEFAULT_NAMES.map((): Vessel => 'duck'), // what each racer floats in
   chore: 'last' as ChoreGoesTo,
 }
 
@@ -21,6 +23,11 @@ try {
   if (saved && Array.isArray(saved.names)) {
     saved.names.slice(0, DEFAULT_NAMES.length).forEach((n: unknown, i: number) => {
       if (typeof n === 'string') racers.names[i] = n
+    })
+  }
+  if (Array.isArray(saved?.vessels)) {
+    saved.vessels.slice(0, DEFAULT_NAMES.length).forEach((v: unknown, i: number) => {
+      if (v === 'duck' || v === 'boat') racers.vessels[i] = v
     })
   }
   if (saved?.chore === 'last' || saved?.chore === 'winner') racers.chore = saved.chore

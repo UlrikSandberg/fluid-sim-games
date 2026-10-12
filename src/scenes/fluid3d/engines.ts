@@ -1,7 +1,7 @@
 import type { Params } from '../../sim/params'
 import {
   collideBodies, createState, integrateObstacle, makeObstacle, obstacleLattice, setObstacle, step,
-  type FrameMotion, type Obstacle, type SimState,
+  type BodyShape, type FrameMotion, type Obstacle, type SimState,
 } from '../../sim/sph'
 import { GpuSph, requestDevice, type GpuBody, type GpuScene, type GpuSwirl } from '../../gpu/sphGpu'
 import { MAX_BODIES } from '../../gpu/sphShaders'
@@ -194,9 +194,11 @@ export class GpuEngine implements FluidEngine {
 
   // Adds a body (up to the GPU's limit); returns false when full. Bodies are only
   // ever appended or all removed, so the GPU's per-body force slots stay aligned.
-  addBody(rect: { center: number[]; size: number[] }): boolean {
+  addBody(rect: { center: number[]; size: number[]; shape?: BodyShape; ballast?: number }): boolean {
     if (this.bodyList.length >= MAX_FLOATERS) return false
     const o = makeObstacle(this.params, rect)
+    if (rect.shape) o.shape = rect.shape
+    if (rect.ballast) o.ballast = rect.ballast
     this.bodyList.push({ o, ...obstacleLattice(o, this.params) })
     this.gpu.setBodies([...this.bodyList, ...this.moverList])
     return true

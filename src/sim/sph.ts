@@ -51,6 +51,39 @@ export interface Obstacle {
   force: Float64Array // fluid force on the body over one step (3 components)
   torque: Float64Array // fluid torque about the centre over one step
   gravityScale?: number // multiplies gravity for this body (default 1; −1 flips it)
+  shape?: BodyShape // a box when absent
+  // Centre of gravity below the centre, as a fraction of the half height (a weighted
+  // bottom or a keel): gravity then rights the body when it tilts. 3D only.
+  ballast?: number
+}
+
+// A body that isn't a plain box: a boat hull, a box whose sides curve in to a point
+// at the front (+x) from x = bow·halfSize[0] onward (3D only).
+export interface BodyShape {
+  kind: 'hull'
+  bow: number // where the bow's taper starts, as a fraction of the half length (−1…1)
+}
+
+// The body's half width (z) at body-frame x: the full half size along the box,
+// narrowing as 1 − t² over the bow (t from 0 where the taper starts to 1 at the tip).
+export function shapeHalfWidth(o: Obstacle, x: number): number {
+  const half = o.halfSize[2]
+  if (!o.shape) return half
+  const start = o.shape.bow * o.halfSize[0]
+  if (x <= start) return half
+  const t = Math.min(1, (x - start) / (o.halfSize[0] - start))
+  return half * (1 - t * t)
+}
+
+// The body's volume as a fraction of its box's (the bow's taper keeps 2/3 of its part).
+export function shapeVolumeFraction(o: Obstacle): number {
+  if (!o.shape) return 1
+  return (1 + o.shape.bow + (2 / 3) * (1 - o.shape.bow)) / 2
+}
+
+// The body's mass: its density times its volume.
+export function bodyMass(o: Obstacle, p: Params): number {
+  return obstacleMass(p, o.halfSize) * shapeVolumeFraction(o)
 }
 
 // The obstacle's rotation angle about z (what a 2D view needs).
@@ -413,6 +446,13 @@ function obstacleParticles(o: Obstacle, sp: number, layers: number): Lattice {
   }
   const thickness = layers * sp
   const nearOutline = (_idx: number[], x: number[]) => {
+    if (o.shape && dim === 3) {
+      // Inside the hull, and near its outline (the bow's curved sides count as its sides).
+      const side = shapeHalfWidth(o, x[0])
+      if (Math.abs(x[2]) > side) return false
+      if (side - Math.abs(x[2]) < thickness) return true
+      return o.halfSize[0] - Math.abs(x[0]) < thickness || o.halfSize[1] - Math.abs(x[1]) < thickness
+    }
     for (let d = 0; d < dim; d++) if (o.halfSize[d] - Math.abs(x[d]) < thickness) return true
     return false
   }
@@ -579,7 +619,7 @@ export function integrateObstacle(o: Obstacle, p: Params, frame?: FrameMotion) {
     }
     o.omega = [0, 0, 0]
   } else {
-    const mass = obstacleMass(p, o.halfSize)
+    const mass = bodyMass(o, p)
     const inertia = boxInertia(mass, o.halfSize)
     const g = o.gravityScale ?? 1
     const acc = o.vel.map((_, d) => o.force[d] / mass + p.gravity[d] * g)
@@ -589,7 +629,15 @@ export function integrateObstacle(o: Obstacle, p: Params, frame?: FrameMotion) {
       o.center[d] += o.vel[d] * dt
     }
     const wb = rotate(o.q, o.omega, true)
-    const tb = rotate(o.q, Array.from(o.torque), true)
+    const torque = Array.from(o.torque)
+    if (o.ballast && dim === 3) {
+      // Weight acting below the centre: a righting torque (the arm turns with the body).
+      const arm = rotate(o.q, [0, -o.ballast * o.halfSize[1], 0])
+      const weight = p.gravity.map((v) => v * g * mass)
+      const t = cross(arm, weight)
+      for (let k = 0; k < 3; k++) torque[k] += t[k]
+    }
+    const tb = rotate(o.q, torque, true)
     const Iw = wb.map((v, k) => inertia[k] * v)
     const gyro = cross(wb, Iw)
     const dwb = tb.map((v, k) => (inertia[k] > 0 ? (v - gyro[k]) / inertia[k] : 0))
@@ -631,8 +679,8 @@ export function collideBodies(bodies: Obstacle[], p: Params) {
       const n = d.map((v) => v / dist)
       const reach = boxReach(a, n) + boxReach(b, n)
       if (dist >= reach) continue
-      const ma = obstacleMass(p, a.halfSize)
-      const mb = obstacleMass(p, b.halfSize)
+      const ma = bodyMass(a, p)
+      const mb = bodyMass(b, p)
       const overlap = reach - dist
       for (let k = 0; k < dim; k++) {
         a.center[k] += (n[k] * overlap * mb) / (ma + mb)
