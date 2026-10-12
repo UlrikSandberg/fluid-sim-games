@@ -70,6 +70,53 @@ export const raceView = {
   duckSize: [1.6, 1, 1.2],
   duckCount: 4,
   follow: true, // camera glides after the leaders
+  ride: -1, // the duck the camera rides (and the arrow keys steer), or −1
+  rideView: 'first' as 'first' | 'chase', // from its head, or from just behind
+  steer: { turn: 0, paddle: 0 }, // held keys: turn +1 left / −1 right, paddle 0/1
+}
+
+// Steering the ridden duck (only while racing): a turn rate it's eased toward,
+// and a paddle that pushes it along its heading up to a little over the current.
+const TURN_RATE = 2.2 // rad/s
+const PADDLE_ACCEL = 5
+const PADDLE_EXTRA = 2.5 // top paddling speed over the current's
+
+// A duck's heading on the water: its +x axis flattened, or null when it's on end.
+function heading(o: Obstacle): number[] | null {
+  const f = rotate(o.q, [1, 0, 0])
+  const len = Math.hypot(f[0], f[2])
+  return len < 0.3 ? null : [f[0] / len, f[2] / len]
+}
+
+// One step of the player's steering on duck o.
+function steer(o: Obstacle, dt: number) {
+  const { turn, paddle } = raceView.steer
+  // A positive turn about +y swings the heading from +x toward −z: to the left,
+  // seen from the duck.
+  if (turn) o.omega[1] += (turn * TURN_RATE - o.omega[1]) * Math.min(1, 10 * dt)
+  const h = heading(o)
+  if (paddle && h && o.vel[0] * h[0] + o.vel[2] * h[1] < raceView.current.speed + PADDLE_EXTRA) {
+    o.vel[0] += PADDLE_ACCEL * h[0] * dt
+    o.vel[2] += PADDLE_ACCEL * h[1] * dt
+  }
+}
+
+// The ride camera: from the duck's head looking ahead (the duck itself hidden),
+// or from behind and above it. Its yaw follows the duck's heading smoothly, so a
+// spinning duck turns the view without jolting it.
+function rideView(o: Obstacle, yaw: number) {
+  const f = [Math.cos(yaw), 0, Math.sin(yaw)]
+  const c = o.center
+  const [hx, hy] = o.halfSize
+  if (raceView.rideView === 'first') {
+    const eye = [c[0] + f[0] * hx * 0.9, c[1] + hy * 2 + 0.4, c[2] + f[2] * hx * 0.9]
+    return { eye, target: [eye[0] + f[0] * 10, eye[1] - 1.2, eye[2] + f[2] * 10], fov: 75 }
+  }
+  return {
+    eye: [c[0] - f[0] * 5, c[1] + 2.5, c[2] - f[2] * 5],
+    target: [c[0] + f[0] * 4, c[1] + 0.5, c[2] + f[2] * 4],
+    fov: 60,
+  }
 }
 
 const MAX_RACE = 120 // seconds; ducks still out by then are ranked by distance
@@ -288,6 +335,8 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   let flipUntil: number[] = [] // per duck, race time its flip wears off (0 = none)
   let zeroGUntil = 0
   let events: { duck: number; kind: PickupKind; at: number }[] = []
+  let rider: Obstacle | null = null // the duck being ridden (and steered)
+  let rideYaw: number | null = null // the ride camera's smoothed heading
 
   // Builds riverLayout's course (with fresh rocks, swirls and pickups) and hangs
   // the ducks at the gate once it's ready. A course whose pieces don't fit
@@ -319,6 +368,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       }
       engine = created
       engine.constrainBody = (o) => {
+        if (o === rider && !o.grabbed && phase === 'racing') steer(o, raceParams.dt)
         if (!o.grabbed) swirlOnDuck(o.center, o.vel, raceParams.dt)
         courseConstraint(g, o)
         solidConstraint(o, rocks)
@@ -414,8 +464,10 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   let view: SimState | null = null
 
   const frame = (now: number) => {
-    accumulator += Math.min(Math.max((now - last) / 1000, 0), 0.1)
+    const frameDt = Math.min(Math.max((now - last) / 1000, 0), 0.1)
+    accumulator += frameDt
     last = now
+    rider = engine?.bodies[raceView.ride] ?? null
     let substeps = 0
     if (paused || !engine) {
       accumulator = 0
@@ -459,7 +511,8 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     }
 
     if (engine && renderer) {
-      renderer.setDucks(engine.bodies)
+      const first = rider != null && raceView.rideView === 'first'
+      renderer.setDucks(engine.bodies, first ? raceView.ride : -1)
       renderer.setPickups(features.pickups.map((q) => ({ pos: q.pos, color: PICKUP_INFO[q.kind].color, taken: q.taken })))
       // Over the resting level: the flowing water stands a little higher.
       renderer.setSwirls(features.swirls.map((w) => ({
@@ -467,6 +520,21 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         y: waterAt(course, locate(course, w.x, w.z).s) + 0.7,
       })))
       renderer.follow(raceView.follow ? followPoint(engine.bodies, phase, finishTimes) : null)
+      if (rider) {
+        const h = heading(rider) ?? (() => {
+          const w = locate(course, rider.center[0], rider.center[2])
+          return [w.tx, w.tz]
+        })()
+        const goal = Math.atan2(h[1], h[0])
+        if (rideYaw == null) rideYaw = goal
+        // Ease toward the duck's heading the short way round.
+        const turn = Math.atan2(Math.sin(goal - rideYaw), Math.cos(goal - rideYaw))
+        rideYaw += turn * (1 - Math.exp(-5 * frameDt))
+        renderer.ride(rideView(rider, rideYaw))
+      } else {
+        rideYaw = null
+        renderer.ride(null)
+      }
       view = engine.view()
       if (view) {
         renderer.updatePositions(view.pos, view.n)

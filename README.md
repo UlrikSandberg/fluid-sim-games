@@ -127,6 +127,12 @@ countdown (on simulated time, so pausing holds it), then the gate opens. After t
 results, **Race again here** (`S`) lines up on the same course; **New course** (`N`)
 rolls another.
 
+**Ride a duck:** `C` (or Racers → Ride) puts the camera on a racer: **First person**
+from its head (that duck isn't drawn) or **Chase** from just behind. The view turns
+with the duck's heading, eased so a spinning duck doesn't jolt it. While racing, the
+arrow keys steer the ridden duck: ←/→ turn it (2.2 rad/s), ↑ paddles along its
+heading (up to 2.5 faster than the current), so it's a nudge, not a motor.
+
 **Pieces** (`course.ts`): a fixed start straight, then the panel's pieces in order,
 then a fixed finish straight:
 - **Straight** (length).

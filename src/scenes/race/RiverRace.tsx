@@ -66,7 +66,7 @@ export function RiverRace() {
         hudRef.current.textContent =
           `GPU · ${s.fps.toFixed(0)} fps · ${s.particles.toLocaleString()} particles · ${s.ducks} ducks · ` +
           (s.status === 'running' ? `${s.substeps.toFixed(1)} substeps/frame` : s.status) +
-          `\nS: start · N: new course · D: add a duck · F: follow camera · drag: orbit · wheel: zoom · Space: pause`
+          `\nS: start · N: new course · C: ride a duck, ←/→ steer, ↑ paddle · D: add a duck · F: follow · Space: pause`
       }
     })
     controllerRef.current = controller
@@ -76,6 +76,18 @@ export function RiverRace() {
     }
   }, [])
 
+  // Rides the last ridden duck (the first racer to begin with), or stops riding.
+  const lastRide = useRef(0)
+  const [, setRideTick] = useState(0)
+  const toggleRide = () => {
+    if (raceView.ride >= 0) {
+      lastRide.current = raceView.ride
+      raceView.ride = -1
+    } else {
+      raceView.ride = Math.min(lastRide.current, raceView.duckCount - 1)
+    }
+    setRideTick((t) => t + 1)
+  }
   const togglePause = () => {
     controllerRef.current?.setPaused(!paused)
     setPaused(!paused)
@@ -89,8 +101,41 @@ export function RiverRace() {
     setStyle(s)
   }
 
+  // C rides a duck, the arrow keys steer it (held: they set raceView.steer;
+  // ignored while a slider or text field has focus, which use them).
+  useEffect(() => {
+    const held = new Set<string>()
+    const apply = () => {
+      raceView.steer.turn = (held.has('ArrowLeft') ? 1 : 0) - (held.has('ArrowRight') ? 1 : 0)
+      raceView.steer.paddle = held.has('ArrowUp') ? 1 : 0
+    }
+    const arrows = ['ArrowLeft', 'ArrowRight', 'ArrowUp']
+    const down = (e: KeyboardEvent) => {
+      if (!arrows.includes(e.code) || (e.target as HTMLElement).closest('input, select, textarea')) return
+      e.preventDefault()
+      held.add(e.code)
+      apply()
+    }
+    const up = (e: KeyboardEvent) => {
+      held.delete(e.code)
+      apply()
+    }
+    const clear = () => {
+      held.clear()
+      apply()
+    }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', clear)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', clear)
+    }
+  }, [])
+
   // S starts a race, D adds a duck, Space pauses, number keys pick the colour mode, V toggles
-  // water/particles (all ignored while a control has focus).
+  // water/particles, C rides a duck (all ignored while a control has focus).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
@@ -101,6 +146,7 @@ export function RiverRace() {
       else if (e.code === 'KeyS') controllerRef.current?.startRace()
       else if (e.code === 'KeyN') controllerRef.current?.newCourse()
       else if (e.code === 'KeyF') raceView.follow = !raceView.follow
+      else if (e.code === 'KeyC') toggleRide()
       else if (e.code === 'KeyV') changeStyle(style === 'water' ? 'particles' : 'water')
       else if (e.code === 'Space') {
         e.preventDefault()
@@ -355,6 +401,29 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
           <span>Follow</span>
           <input type="checkbox" checked={raceView.follow} onChange={(e) => update(() => (raceView.follow = e.target.checked))} />
         </label>
+        <label className="row">
+          <span>Ride</span>
+          <select value={raceView.ride} title="C toggles; ←/→ steer, ↑ paddles while racing"
+            onChange={(e) => update(() => (raceView.ride = Number(e.target.value)))}>
+            <option value={-1}>Off (orbit camera)</option>
+            {racers.names.slice(0, raceView.duckCount).map((_, i) => (
+              <option key={i} value={i}>{duckName(i)}</option>
+            ))}
+          </select>
+        </label>
+        <div className="row">
+          <span>View</span>
+          <div className="toggle" role="radiogroup">
+            {(['first', 'chase'] as const).map((v) => (
+              <button key={v} role="radio" aria-checked={raceView.rideView === v}
+                className={raceView.rideView === v ? 'on current' : undefined}
+                onClick={() => update(() => (raceView.rideView = v))}>
+                {v === 'first' ? 'First person' : 'Chase'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="note">the ridden duck steers with ←/→ and paddles with ↑ (a little faster than the current)</p>
       </Section>
 
       <Section title="Ducks">

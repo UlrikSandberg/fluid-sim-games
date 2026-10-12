@@ -4,6 +4,7 @@ import type { Domain } from '../sim/params'
 import { WaterSurface3D } from './waterSurface3d'
 
 const BACKGROUND = 0x0d1117
+const ORBIT_FOV = 45
 
 // Duck colours, one per racer.
 export const DUCK_COLORS = [0xf2c230, 0xff8a3d, 0xff5d8f, 0x7ad151, 0x3fb7e8, 0xb07cff, 0xf5f5f5, 0xff4d4d]
@@ -93,7 +94,7 @@ function disposeDuck(duck: THREE.Group) {
 export class Renderer3D {
   private readonly gl: THREE.WebGLRenderer
   private readonly scene = new THREE.Scene()
-  private readonly camera = new THREE.PerspectiveCamera(45, 1, 0.1, 500)
+  private readonly camera = new THREE.PerspectiveCamera(ORBIT_FOV, 1, 0.1, 500)
   private readonly controls: OrbitControls
   private readonly mesh: THREE.InstancedMesh<THREE.IcosahedronGeometry, THREE.MeshLambertMaterial>
   // Per-instance linear RGB (stride 3). Fill it, then call commitColors().
@@ -124,6 +125,7 @@ export class Renderer3D {
   private readonly checker: THREE.MeshLambertMaterial
   private readonly followGoal = new THREE.Vector3()
   private following = false
+  private beforeRide: { position: THREE.Vector3; target: THREE.Vector3 } | null = null // set while riding
   private readonly resizeObserver: ResizeObserver
   private readonly container: HTMLElement
 
@@ -287,7 +289,8 @@ export class Renderer3D {
 
   // Shows a duck per body (tank coordinates, quaternions [w, x, y, z]); duck i
   // gets DUCK_COLORS[i]. Meshes are pooled and rebuilt only if a hull's size changes.
-  setDucks(bodies: { center: number[]; halfSize: number[]; q: number[] }[]) {
+  // `hidden`: a duck not to draw (the one the camera is riding in first person).
+  setDucks(bodies: { center: number[]; halfSize: number[]; q: number[] }[], hidden = -1) {
     const parent = this.body.parent!
     bodies.forEach((b, i) => {
       let duck = this.ducks[i]
@@ -300,7 +303,7 @@ export class Renderer3D {
         parent.add(duck)
         this.ducks[i] = duck
       }
-      duck.visible = true
+      duck.visible = i !== hidden
       duck.position.set(b.center[0], b.center[1], b.center[2])
       duck.quaternion.set(b.q[1], b.q[2], b.q[3], b.q[0])
     })
@@ -426,6 +429,33 @@ export class Renderer3D {
     }
   }
 
+  // Puts the camera at `eye` looking at `target` (tank coordinates) with the given
+  // vertical field of view, taking it off the orbit controls; null hands it back to
+  // them where it was before.
+  ride(view: { eye: number[]; target: number[]; fov: number } | null) {
+    if (view) {
+      if (!this.beforeRide) {
+        this.beforeRide = { position: this.camera.position.clone(), target: this.controls.target.clone() }
+        this.controls.enabled = false
+      }
+      this.camera.position.set(view.eye[0], view.eye[1], view.eye[2])
+      this.camera.lookAt(view.target[0], view.target[1], view.target[2])
+      this.setFov(view.fov)
+    } else if (this.beforeRide) {
+      this.camera.position.copy(this.beforeRide.position)
+      this.controls.target.copy(this.beforeRide.target)
+      this.controls.enabled = true
+      this.beforeRide = null
+      this.setFov(ORBIT_FOV)
+    }
+  }
+
+  private setFov(fov: number) {
+    if (this.camera.fov === fov) return
+    this.camera.fov = fov
+    this.camera.updateProjectionMatrix()
+  }
+
   // Tank orientation as a quaternion [w, x, y, z] (tank → world).
   setTankOrientation(q: number[]) {
     this.tank.quaternion.set(q[1], q[2], q[3], q[0])
@@ -455,13 +485,13 @@ export class Renderer3D {
       g.rotation.y += 2 * dt
       g.position.y = g.userData.baseY + 0.2 * Math.sin(this.gemClock * 3 + i)
     })
-    if (this.following) {
+    if (this.following && !this.beforeRide) {
       // Move the orbit target (and the camera with it) a little toward the goal each frame.
       const step = this.followGoal.clone().sub(this.controls.target).multiplyScalar(0.04)
       this.controls.target.add(step)
       this.camera.position.add(step)
     }
-    this.controls.update() // applies damping
+    if (!this.beforeRide) this.controls.update() // applies damping (and would turn a riding camera)
     if (water) this.surface.render(this.gl, this.scene, this.camera, this.mesh)
     else this.gl.render(this.scene, this.camera)
   }
