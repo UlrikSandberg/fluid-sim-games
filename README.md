@@ -207,9 +207,19 @@ then glides after the leading pack, then rests on the finish.
 **Randomness** (`features.ts`, the panel's Race section; drawn for each course):
 - **Rocks, swirls and power-ups** are set per 50 units of river (the panel shows the
   resulting count), so longer courses get more of each at the same density.
-- **Rocks:** solid boxes in the river, clear of the start, the waterfalls and the
-  flip zones and the finish, always leaving a passage. Water flows around them; ducks
+- **Rocks:** static solid boxes in the river, clear of the start, the waterfalls and
+  the flip zones and the finish, always leaving a passage. Water flows around them; ducks
   bounce off (`solidConstraint`).
+- **Moving obstacles** (`movers.ts`; the Race section's Moving dial, per 50 units,
+  up to 8, with toggles for which kinds): kinematic bodies on the GPU, moved by a
+  script, pushing the water (and the ducks, on the CPU) but never pushed back.
+  - **Gates:** a wooden wall slides out of a bank 28–36% of the way across, holds,
+    slides back in (out of sight under the bank) and rests, every 6–10 s.
+  - **Pulsing rocks** grow and shrink (±35%) every 4–7 s; their boundary particles
+    are rebuilt whenever the size has changed by a quarter spacing.
+  - **Sliders:** a block wandering from bank to bank.
+  - **Spinners:** a bar about half the width across turning about its middle.
+  They share the GPU's body slots with the ducks (16 in all: 8 ducks, 8 movers).
 - **Swirls** (up to 8 at a time, radius 4–6): whirlpools that turn the water's
   horizontal velocity toward a rotation about a point (fastest mid-radius) with a
   gentle inward pull, shown as glowing spiral discs. They come and go: each lasts

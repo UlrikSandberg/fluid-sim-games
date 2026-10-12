@@ -6,6 +6,11 @@ import {
 import { GpuSph, requestDevice, type GpuBody, type GpuScene, type GpuSwirl } from '../../gpu/sphGpu'
 import { MAX_BODIES } from '../../gpu/sphShaders'
 
+// Floating bodies (ducks, the sandbox's box); the rest of the GPU's body slots
+// are for kinematic movers.
+export const MAX_FLOATERS = 8
+export const MAX_MOVERS = MAX_BODIES - MAX_FLOATERS
+
 export type EngineKind = 'cpu' | 'gpu'
 
 // What the 3D scene needs from a solver: advance by some substeps under the
@@ -74,6 +79,10 @@ export class GpuEngine implements FluidEngine {
   private readonly gpu: GpuSph
   private readonly params: Params
   private bodyList: GpuBody[] = []
+  // Kinematic bodies: moved by their owner (setting o.center, q, vel, omega and
+  // halfSize), pushing the water but not pushed back. After the floating bodies
+  // on the GPU, so the floaters' force slots stay put.
+  private moverList: GpuBody[] = []
   private lastReadback: object | null = null
   private cached: SimState | null = null
 
@@ -112,9 +121,31 @@ export class GpuEngine implements FluidEngine {
     return this.bodyList[0]?.o ?? null
   }
 
+  // Replaces the kinematic movers (up to MAX_MOVERS).
+  setMovers(movers: Obstacle[]) {
+    this.moverList = movers.slice(0, MAX_MOVERS).map((o) => ({ o, ...obstacleLattice(o, this.params) }))
+  }
+
+  get movers(): Obstacle[] {
+    return this.moverList.map((m) => m.o)
+  }
+
+  // A mover whose size changed: its boundary particles are rebuilt once it has
+  // grown or shrunk by a quarter spacing on some axis since they were made.
+  private refreshMovers() {
+    const tolerance = this.params.spacing / 4
+    for (const m of this.moverList) {
+      const made = m.size ?? (m.size = m.o.halfSize.slice())
+      if (m.o.halfSize.some((v, d) => Math.abs(v - made[d]) > tolerance)) {
+        Object.assign(m, obstacleLattice(m.o, this.params), { size: m.o.halfSize.slice() })
+      }
+    }
+  }
+
   step(substeps: number, frame: FrameMotion, gravity: number[]) {
     this.params.gravity = gravity
-    if (this.bodyList.length > 0 && substeps > 0) {
+    if (this.moverList.length > 0) this.refreshMovers()
+    if ((this.bodyList.length > 0 || this.moverList.length > 0) && substeps > 0) {
       const f = this.gpu.latest?.bodyForce
       this.bodyList.forEach(({ o }, b) => {
         for (let k = 0; k < 3; k++) {
@@ -130,9 +161,9 @@ export class GpuEngine implements FluidEngine {
         }
         collideBodies(bodies, this.params)
       }
-      this.gpu.setBodies(this.bodyList)
+      this.gpu.setBodies([...this.bodyList, ...this.moverList])
     }
-    this.gpu.step(substeps, frame, gravity, this.bodies)
+    this.gpu.step(substeps, frame, gravity, [...this.bodies, ...this.movers])
   }
 
   view(): SimState | null {
@@ -164,10 +195,10 @@ export class GpuEngine implements FluidEngine {
   // Adds a body (up to the GPU's limit); returns false when full. Bodies are only
   // ever appended or all removed, so the GPU's per-body force slots stay aligned.
   addBody(rect: { center: number[]; size: number[] }): boolean {
-    if (this.bodyList.length >= MAX_BODIES) return false
+    if (this.bodyList.length >= MAX_FLOATERS) return false
     const o = makeObstacle(this.params, rect)
     this.bodyList.push({ o, ...obstacleLattice(o, this.params) })
-    this.gpu.setBodies(this.bodyList)
+    this.gpu.setBodies([...this.bodyList, ...this.moverList])
     return true
   }
 
@@ -179,7 +210,7 @@ export class GpuEngine implements FluidEngine {
 
   removeBody() {
     this.bodyList = []
-    this.gpu.setBodies([])
+    this.gpu.setBodies(this.moverList)
   }
 
   dispose() {

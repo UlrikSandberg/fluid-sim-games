@@ -23,9 +23,9 @@ import {
 
 const BODY_FORCE_SCALE = 0.5 // fixed-point scale for the force/torque atomics
 // Body boundary particles the buffer holds, all bodies together: an 8×8×8 box
-// (the sandbox panel's maximum) at spacing 0.5 has ~2400, a duck ~100; resizing
-// would invalidate the bind group.
-const MAX_BODY_PARTICLES = 4096
+// (the sandbox panel's maximum) at spacing 0.5 has ~2400, a duck ~100, a river
+// obstacle up to ~400; resizing would invalidate the bind group.
+const MAX_BODY_PARTICLES = 8192
 
 // A body as the GPU sees it: its pose (an Obstacle) and its boundary particles
 // in the body frame with their ψ (from obstacleLattice).
@@ -33,6 +33,7 @@ export interface GpuBody {
   o: Obstacle
   local: Float32Array
   psi: Float32Array
+  size?: number[] // the half sizes `local` was made for (resizable bodies)
 }
 
 export interface GpuScene {

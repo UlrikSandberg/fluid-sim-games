@@ -1,5 +1,8 @@
 import type { SolidBox } from '../../sim/sph'
+import type { Params } from '../../sim/params'
 import { MAX_BOXES, MAX_SWIRLS } from '../../gpu/sphShaders'
+import { MAX_MOVERS } from '../fluid3d/engines'
+import { MOVER_KINDS, makeMover, type Mover, type MoverKind } from './movers'
 import { pointAt, randomPieces, waterAt, type CourseGeometry, type PieceCounts } from './course'
 import { START_S, finishS, type RiverLayout } from './riverScene'
 
@@ -37,6 +40,8 @@ export const raceSettings = {
   // What a random course is made of (each drawn from its range when its 🎲 is on).
   counts: { length: 100, waterfalls: 2, uTurns: 1, bends: 2, flipZones: 1 } as PieceCounts,
   rocks: 2,
+  movers: 1.5, // moving obstacles
+  moverKinds: { gate: true, pulse: true, slider: true, spinner: true } as Record<MoverKind, boolean>,
   swirls: 1.5, // at a time
   pickups: 2.5,
 }
@@ -54,9 +59,10 @@ export const RANDOM_RANGES: Record<keyof PieceCounts | 'width', number[]> = {
 // How many of something a course gets, at `perFifty` per 50 units of its length,
 // up to what the GPU holds (rocks share the solid-box slots with nothing else now,
 // but keep one spare).
-export function countFor(perFifty: number, length: number, kind?: 'rocks' | 'swirls' | 'pickups'): number {
+export function countFor(perFifty: number, length: number, kind?: 'rocks' | 'movers' | 'swirls' | 'pickups'): number {
   const n = Math.round((perFifty * length) / 50)
   if (kind === 'rocks') return Math.min(n, MAX_BOXES - 1)
+  if (kind === 'movers') return Math.min(n, MAX_MOVERS)
   if (kind === 'swirls') return Math.min(n, MAX_SWIRLS)
   return n
 }
@@ -64,6 +70,7 @@ export function countFor(perFifty: number, length: number, kind?: 'rocks' | 'swi
 // What the current race has (filled by generateFeatures).
 export const features = {
   rocks: [] as SolidBox[],
+  movers: [] as Mover[],
   swirls: [] as Swirl[],
   pickups: [] as Pickup[],
 }
@@ -100,8 +107,17 @@ function freeS(g: CourseGeometry, margin: number): number | null {
 
 const rockCentre = (r: SolidBox) => [(r.min[0] + r.max[0]) / 2, (r.min[2] + r.max[2]) / 2]
 
-// Rocks, a swirl schedule and pickups for a race on course `g`.
-export function generateFeatures(g: CourseGeometry) {
+// Whether a circle at (x, z) of radius `radius` keeps `gap` clear of the movers'
+// reach (their spot along the course, and how far they get from it).
+function clearOfMovers(g: CourseGeometry, x: number, z: number, radius: number, gap: number) {
+  return features.movers.every((m) => {
+    const c = pointAt(g, m.s, m.kind === 'gate' ? m.d * g.halfWidth : m.d)
+    return Math.hypot(c.x - x, c.z - z) > m.radius + radius + gap
+  })
+}
+
+// Rocks, moving obstacles, a swirl schedule and pickups for a race on course `g`.
+export function generateFeatures(g: CourseGeometry, params: Params) {
   const hw = g.halfWidth
   features.rocks = []
   const rocks = countFor(raceSettings.rocks, g.length, 'rocks')
@@ -118,6 +134,22 @@ export function generateFeatures(g: CourseGeometry) {
     // Down to the domain's floor, so the push-out never sends water out of the bottom.
     features.rocks.push({ min: [p.x - sx / 2, 0, p.z - sz / 2], max: [p.x + sx / 2, waterAt(g, s) + 1.2, p.z + sz / 2] })
   }
+  features.movers = []
+  const kinds = MOVER_KINDS.filter((k) => raceSettings.moverKinds[k])
+  const movers = kinds.length > 0 ? countFor(raceSettings.movers, g.length, 'movers') : 0
+  for (let tries = 0; tries < 300 && features.movers.length < movers; tries++) {
+    const s = freeS(g, 5)
+    if (s == null) break
+    const kind = kinds[Math.floor(Math.random() * kinds.length)]
+    const m = makeMover(params, g, kind, s, rand(-1, 1) * (hw - 3))
+    if (!m) continue
+    const c = pointAt(g, m.s, m.kind === 'gate' ? m.d * hw : m.d)
+    const clear =
+      features.rocks.every((r) => Math.hypot(rockCentre(r)[0] - c.x, rockCentre(r)[1] - c.z) > m.radius + 2.5) &&
+      // Movers keep out of each other's way along the course.
+      features.movers.every((o) => Math.abs(o.s - m.s) > 4 + (o.kind === 'gate' ? 1 : o.radius) + (m.kind === 'gate' ? 1 : m.radius))
+    if (clear) features.movers.push(m)
+  }
   features.swirls = []
   const swirls = countFor(raceSettings.swirls, g.length, 'swirls')
   for (let i = 0; i < swirls; i++) {
@@ -133,6 +165,7 @@ export function generateFeatures(g: CourseGeometry) {
     const p = pointAt(g, s, rand(-1, 1) * (hw - 1.5))
     const clear =
       features.rocks.every((r) => Math.hypot(rockCentre(r)[0] - p.x, rockCentre(r)[1] - p.z) > 3) &&
+      clearOfMovers(g, p.x, p.z, 0, 1.5) &&
       features.pickups.every((q) => Math.hypot(q.pos[0] - p.x, q.pos[2] - p.z) > 4)
     if (!clear) continue
     const kind = (['flip', 'boost', 'zeroG'] as const)[Math.floor(Math.random() * 3)]
@@ -158,6 +191,7 @@ function respawn(g: CourseGeometry, w: Swirl, delay: number) {
     const p = pointAt(g, s, rand(-1, 1) * Math.max(0, g.halfWidth - radius))
     const clear =
       features.rocks.every((r) => Math.hypot(rockCentre(r)[0] - p.x, rockCentre(r)[1] - p.z) > radius + 1.5) &&
+      clearOfMovers(g, p.x, p.z, radius, 0.5) &&
       features.swirls.every((o) => o === w || o.age < 0 || Math.hypot(o.x - p.x, o.z - p.z) > o.radius + radius)
     if (!clear) continue
     Object.assign(w, { x: p.x, z: p.z, radius, peak: (Math.random() < 0.5 ? -1 : 1) * rand(4, 7) })

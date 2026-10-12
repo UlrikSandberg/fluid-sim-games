@@ -201,7 +201,9 @@ export function buildCourse(pieces: Piece[], width: number, depth: number): Cour
     minZ = Math.min(minZ, pts[4 * k + 1])
     maxZ = Math.max(maxZ, pts[4 * k + 1])
   }
-  const reach = halfWidth + MARGIN + 1
+  // Room beside the banks for the banks' particles, and for a gate (up to 36%
+  // of the width plus a margin, see movers.ts) to slide back into.
+  const reach = halfWidth + Math.max(MARGIN + 1, 0.4 * width + 3)
   const samples = Float32Array.from(pts)
   for (let k = 0; k < n; k++) {
     samples[4 * k] += reach - minX
@@ -350,7 +352,7 @@ export function randomPieces(c: PieceCounts, width: number): Piece[] {
     for (let i = 0; i < uTurns; i++) items.push({ kind: 'bend', angle: sign() * 180, radius: minRadius(halfWidth) })
     for (let i = 0; i < bends; i++) {
       const angle = [30, 45, 60, 90][Math.floor(Math.random() * 4)]
-      items.push({ kind: 'bend', angle: sign() * angle, radius: Math.round(rand(minRadius(halfWidth) + 2, minRadius(halfWidth) + 16)) })
+      items.push({ kind: 'bend', angle: sign() * angle, radius: Math.round(rand(minRadius(halfWidth) + 2, minRadius(halfWidth) + 10)) })
     }
     for (let i = 0; i < c.flipZones; i++) items.push({ kind: 'flip', length: Math.round(rand(10, 16)) })
     for (let i = items.length - 1; i > 0; i--) {

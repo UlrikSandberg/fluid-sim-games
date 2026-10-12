@@ -8,6 +8,7 @@ import { RIDE_DISTANCE, courseState, raceParams, raceView, startRaceLoop, type R
 import { RANDOM_RANGES, countFor, raceSettings, type RandomDial } from './features'
 import { duckColor, duckName, racers, renderEvents, renderStandings, saveRacers } from './racers'
 import { defaultRiverLayout, estimateParticles, riverLayout } from './riverScene'
+import { MOVER_KINDS, type MoverKind } from './movers'
 import { courseLength, minRadius, piecesOverlap, type Piece, type PieceCounts, type PieceKind } from './course'
 
 // The game scene: named ducks race down a river built from pieces (straights,
@@ -292,7 +293,7 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
       {dice(key)}
     </div>
   )
-  const perFifty = (label: string, key: 'rocks' | 'swirls' | 'pickups') => (
+  const perFifty = (label: string, key: 'rocks' | 'movers' | 'swirls' | 'pickups') => (
     <Slider key={key} label={label} value={raceSettings[key]} min={0} max={5} step={0.5}
       format={(v) => `${v.toFixed(1)} → ${countFor(v, length, key)}`} onChange={(v) => update(() => (raceSettings[key] = v))} />
   )
@@ -322,6 +323,18 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
       <Section title="Race (each course)">
         <p className="note">per 50 units of river, so longer courses get more</p>
         {perFifty('Rocks', 'rocks')}
+        {perFifty('Moving', 'movers')}
+        <div className="row">
+          <span />
+          <div className="toggle kinds">
+            {MOVER_KINDS.map((k) => (
+              <button key={k} aria-pressed={raceSettings.moverKinds[k]} className={raceSettings.moverKinds[k] ? 'on current' : undefined}
+                title="include in new courses" onClick={() => update(() => (raceSettings.moverKinds[k] = !raceSettings.moverKinds[k]))}>
+                {MOVER_LABELS[k]}
+              </button>
+            ))}
+          </div>
+        </div>
         {perFifty('Swirls', 'swirls')}
         {perFifty('Power-ups', 'pickups')}
         <p className="note">swirls come and go · ⬆ Flip · ⚡ Boost · 🌌 Zero-G</p>
@@ -487,6 +500,8 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
     </details>
   )
 }
+
+const MOVER_LABELS: Record<MoverKind, string> = { gate: 'Gates', pulse: 'Pulsing', slider: 'Sliders', spinner: 'Spinners' }
 
 const PIECE_INFO: Record<PieceKind, { icon: string; label: string }> = {
   straight: { icon: '━', label: 'Straight' },

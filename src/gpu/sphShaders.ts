@@ -15,7 +15,7 @@ export const SCAN_THREADS = 256
 
 // Field order must match GpuSph.writeParams.
 export const MAX_BOXES = 8 // the ledge plus rocks
-export const MAX_BODIES = 8
+export const MAX_BODIES = 16 // floating ducks plus kinematic movers (see GpuEngine)
 export const MAX_SWIRLS = 8
 export const MAX_FALLS = 4 // waterfalls along a course
 export const MAX_ZONES = 3 // flip zones along a course

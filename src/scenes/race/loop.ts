@@ -12,6 +12,7 @@ import {
   FLIP_ZONE_GRAVITY, bedAt, buildCourse, lidAt, locate, pointAt, terrain, waterAt, zoneAt, zoneLid, type CourseGeometry,
 } from './course'
 import type { SolidBox } from '../../sim/sph'
+import { MOVER_COLORS, moverConstraint, updateMovers } from './movers'
 
 // idle: no ducks; setup: ducks hang at the gate while the water settles, until
 // Start; countdown: 3, 2, 1; racing; finished.
@@ -339,6 +340,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   let flipUntil: number[] = [] // per duck, race time its flip wears off (0 = none)
   let zeroGUntil = 0
   let events: { duck: number; kind: PickupKind; at: number }[] = []
+  let moverClock = 0 // simulated seconds the movers have been moving
   let rider: Obstacle | null = null // the duck being ridden (and steered)
   let rideYaw: number | null = null // the ride camera's smoothed heading
 
@@ -359,8 +361,10 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     courseState.length = g.length
     courseState.version++
     refreshParams()
-    generateFeatures(g)
+    generateFeatures(g, raceParams)
     const rocks = features.rocks
+    const movers = features.movers
+    moverClock = 0
     void GpuEngine.create(raceParams, riverScene(raceParams, g, rocks)).then((created) => {
       if (mine !== generation) {
         created?.dispose()
@@ -376,7 +380,9 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         if (!o.grabbed) swirlOnDuck(o.center, o.vel, raceParams.dt)
         courseConstraint(g, o)
         solidConstraint(o, rocks)
+        moverConstraint(o, movers)
       }
+      engine.setMovers(movers.map((m) => m.o))
       // Framed for a ~50-unit stretch, not the whole course: on long rivers the
       // whole-course view made ducks and swirls tiny, and the follow camera tracks
       // the race anyway.
@@ -458,6 +464,8 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   }
 
   build()
+  // For poking at a race from the browser console (and the headless checks).
+  if (import.meta.env.DEV) Object.assign(window, { __race: { features, course: () => course, raceView, renderer: () => renderer } })
 
   let accumulator = 0
   let last = performance.now()
@@ -483,6 +491,8 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       engine.current.speed = raceView.current.speed
       engine.current.rate = raceView.current.rate
       updateSwirls(course, simulated)
+      moverClock += simulated
+      updateMovers(course, features.movers, moverClock, simulated)
       engine.setSwirls(features.swirls.filter((w) => w.strength !== 0))
       duckGravity(engine.bodies)
       const pivot = raceParams.domain.min.map((v, d) => (v + raceParams.domain.max[d]) / 2)
@@ -517,6 +527,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     if (engine && renderer) {
       const first = rider != null && raceView.rideView === 'first'
       renderer.setDucks(engine.bodies, first ? raceView.ride : -1)
+      renderer.setMovers(features.movers.map((m) => ({ ...m.o, color: MOVER_COLORS[m.kind] })))
       renderer.setPickups(features.pickups.map((q) => ({ pos: q.pos, color: PICKUP_INFO[q.kind].color, taken: q.taken })))
       // Over the resting level: the flowing water stands a little higher.
       renderer.setSwirls(features.swirls.map((w) => ({

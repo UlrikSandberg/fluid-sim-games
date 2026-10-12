@@ -113,6 +113,7 @@ export class Renderer3D {
   private readonly rim = new THREE.LineBasicMaterial({ color: 0xd6b8ff })
   private readonly banks: (THREE.Mesh | THREE.Line)[] = [] // ground, lids
   private readonly ducks: THREE.Group[] = []
+  private readonly movers: THREE.Mesh<THREE.BoxGeometry, THREE.MeshLambertMaterial>[] = []
   private readonly swirlDiscs: { mesh: THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>; strength: number }[] = []
   private swirlTexture: THREE.CanvasTexture | null = null
   private lastFrame = performance.now()
@@ -392,6 +393,25 @@ export class Renderer3D {
     for (let i = swirls.length; i < this.swirlDiscs.length; i++) this.swirlDiscs[i].mesh.visible = false
   }
 
+  // Shows moving obstacles as boxes (tank coordinates, quaternions [w, x, y, z]),
+  // one colour each. Meshes are pooled; call every frame.
+  setMovers(movers: { center: number[]; halfSize: number[]; q: number[]; color: number }[]) {
+    movers.forEach((m, i) => {
+      let mesh = this.movers[i]
+      if (!mesh) {
+        mesh = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.MeshLambertMaterial())
+        this.body.parent!.add(mesh)
+        this.movers.push(mesh)
+      }
+      mesh.visible = true
+      mesh.material.color.setHex(m.color)
+      mesh.position.set(m.center[0], m.center[1], m.center[2])
+      mesh.scale.set(m.halfSize[0], m.halfSize[1], m.halfSize[2])
+      mesh.quaternion.set(m.q[1], m.q[2], m.q[3], m.q[0])
+    })
+    for (let i = movers.length; i < this.movers.length; i++) this.movers[i].visible = false
+  }
+
   // Shows the power-ups as glowing gems (tank coordinates), spinning and bobbing;
   // taken ones are hidden. Rebuilt only when the set of pickups changes.
   setPickups(pickups: { pos: number[]; color: number; taken: boolean }[]) {
@@ -517,6 +537,10 @@ export class Renderer3D {
     for (const s of this.solids) s.geometry.dispose()
     for (const b of this.banks) b.geometry.dispose()
     for (const d of this.ducks) disposeDuck(d)
+    for (const m of this.movers) {
+      m.geometry.dispose()
+      m.material.dispose()
+    }
     this.setGate(null)
     this.setFinish(null)
     for (const d of this.swirlDiscs) {

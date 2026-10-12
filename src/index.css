@@ -522,3 +522,7 @@ body,
   padding: 2px 5px;
   font-size: 11px;
 }
+
+.panel .toggle.kinds button {
+  font-size: 10px;
+}
