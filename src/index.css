@@ -321,3 +321,15 @@ body,
   border: 1px solid #d29922;
   border-radius: 6px;
 }
+
+.countdown {
+  position: absolute;
+  top: 18%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 96px;
+  font-weight: bold;
+  color: #f2c230;
+  text-shadow: 0 4px 24px rgb(0 0 0 / 0.6);
+  pointer-events: none;
+}

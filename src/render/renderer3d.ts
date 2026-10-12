@@ -76,6 +76,8 @@ export class Renderer3D {
   private readonly ground = new THREE.MeshLambertMaterial({ color: 0x3f5a3a, side: THREE.DoubleSide })
   private readonly banks: THREE.Mesh<THREE.BufferGeometry, THREE.MeshLambertMaterial>[] = []
   private readonly ducks: THREE.Group[] = []
+  private readonly wood = new THREE.MeshLambertMaterial({ color: 0x8a5a2b })
+  private gate: THREE.Group | null = null
   private readonly resizeObserver: ResizeObserver
   private readonly container: HTMLElement
 
@@ -224,6 +226,32 @@ export class Renderer3D {
     for (let i = bodies.length; i < this.ducks.length; i++) this.ducks[i].visible = false
   }
 
+  // Shows the starting gate, a wooden bar between `ends` (tank coordinates) on
+  // two posts, or removes it with null.
+  setGate(ends: number[][] | null) {
+    if (this.gate) {
+      this.gate.removeFromParent()
+      this.gate.traverse((child) => {
+        if (child instanceof THREE.Mesh) child.geometry.dispose()
+      })
+      this.gate = null
+    }
+    if (!ends) return
+    const [a, b] = ends.map((e) => new THREE.Vector3(e[0], e[1], e[2]))
+    const gate = new THREE.Group()
+    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, a.distanceTo(b), 10), this.wood)
+    bar.position.copy(a).add(b).multiplyScalar(0.5)
+    bar.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize())
+    gate.add(bar)
+    for (const end of [a, b]) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 4, 10), this.wood)
+      post.position.set(end.x, end.y - 2, end.z)
+      gate.add(post)
+    }
+    this.body.parent!.add(gate)
+    this.gate = gate
+  }
+
   // Tank orientation as a quaternion [w, x, y, z] (tank → world).
   setTankOrientation(q: number[]) {
     this.tank.quaternion.set(q[1], q[2], q[3], q[0])
@@ -268,6 +296,8 @@ export class Renderer3D {
     for (const s of this.solids) s.geometry.dispose()
     for (const b of this.banks) b.geometry.dispose()
     for (const d of this.ducks) disposeDuck(d)
+    this.setGate(null)
+    this.wood.dispose()
     this.stone.dispose()
     this.ground.dispose()
     this.bounds.dispose()

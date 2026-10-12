@@ -8,18 +8,23 @@ import {
   DEFAULT_CURRENT, bankLines, courseOf, riverBoxes, riverLayout, riverParams, riverScene,
 } from './riverScene'
 
+export type RacePhase = 'idle' | 'countdown' | 'racing'
+
 export interface RaceStats {
   fps: number
   particles: number
   substeps: number
   ducks: number
+  phase: RacePhase
+  countdown: number // seconds left before the gate opens (countdown phase)
+  sinceStart: number // seconds since the gate opened (racing phase)
   status: 'starting' | 'running' | 'paused' | 'no-webgpu'
 }
 
 export interface RaceController {
   reset(): void // rebuild the course from riverLayout
   setPaused(paused: boolean): void
-  startRace(count: number): void // clear the ducks and line up `count` at the inlet
+  startRace(count: number): void // clear the ducks, hang `count` at the start line, count down, release
   dropDuck(): void // add one duck at the inlet
   clearDucks(): void
   dispose(): void
@@ -38,6 +43,9 @@ export const raceView = {
 }
 
 const STATS_INTERVAL_MS = 250
+const COUNTDOWN = 3 // seconds of simulated time before the gate opens
+const START_X = 4 // the start line's position along the course
+const LANE_GAP = 0.15 // between neighbouring ducks on the start line
 
 // Rebuilds raceParams for the current layout, keeping the live dials.
 function refreshParams() {
@@ -72,24 +80,33 @@ function bankConstraint(o: Obstacle) {
   }
 }
 
-// Starting positions for `count` ducks: rows of lanes across the channel just
-// downstream of the inlet, dropped a little above the water, spaced so their
-// collision spheres don't touch.
-function startingGrid(count: number): number[][] {
+// The start line: `count` ducks side by side across the channel at START_X,
+// along the channel's perpendicular there, hanging just above the water and facing
+// downstream. If they don't fit the channel's width at their set size, they're
+// scaled down to fit. Also returns the gate bar's ends, above the ducks.
+function startLine(count: number) {
   const c = courseOf(riverLayout)
-  const size = raceView.duckSize
-  const gap = 2 * Math.max(...size.map((s) => s / 2)) + 0.4
-  const perRow = Math.max(1, Math.floor((2 * c.halfWidth - 1) / gap))
-  const y = riverLayout.ledgeHeight + riverLayout.upperDepth + size[1] / 2 + 0.5
-  const out: number[][] = []
-  for (let i = 0; i < count; i++) {
-    const row = Math.floor(i / perRow)
-    const inRow = Math.min(perRow, count - row * perRow)
-    const lane = i % perRow
-    const x = 2 + gap * row
-    out.push([x, y, c.centerline(x) + (lane - (inRow - 1) / 2) * gap])
-  }
-  return out
+  const s = c.slope(START_X)
+  const norm = Math.hypot(1, s)
+  const across = [-s / norm, 1 / norm] // (x, z) unit vector across the channel
+  const available = 2 * c.halfWidth - 0.6
+  const needed = count * raceView.duckSize[2] + (count - 1) * LANE_GAP
+  const scale = Math.min(1, available / needed)
+  const size = raceView.duckSize.map((v) => v * scale)
+  const water = riverLayout.ledgeHeight + riverLayout.upperDepth
+  const y = water + size[1] / 2 + 0.3
+  const zc = c.centerline(START_X)
+  const positions = Array.from({ length: count }, (_, i) => {
+    const offset = (i - (count - 1) / 2) * (size[2] + LANE_GAP)
+    return [START_X + offset * across[0], y, zc + offset * across[1]]
+  })
+  const reach = c.halfWidth + 0.5
+  const barY = y + size[1] / 2 + 0.5
+  const gate = [
+    [START_X - reach * across[0], barY, zc - reach * across[1]],
+    [START_X + reach * across[0], barY, zc + reach * across[1]],
+  ]
+  return { positions, size, gate }
 }
 
 // The river race's loop: the GPU solver running the course from riverScene,
@@ -101,6 +118,9 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   let generation = 0
   let paused = false
   let noWebGpu = false
+  let phase: RacePhase = 'idle'
+  let countdown = 0
+  let sinceStart = 0
 
   const start = () => {
     const mine = ++generation
@@ -108,6 +128,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     renderer?.dispose()
     engine = null
     renderer = null
+    phase = 'idle'
     refreshParams()
     void GpuEngine.create(raceParams, riverScene(raceParams, riverLayout)).then((created) => {
       if (mine !== generation) {
@@ -163,6 +184,22 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       const pivot = raceParams.domain.min.map((v, d) => (v + raceParams.domain.max[d]) / 2)
       const still: FrameMotion = { omega: [0, 0, 0], alpha: [0, 0, 0], pivot }
       engine.step(substeps, still, [0, -raceView.gravity, 0])
+      // The countdown runs on simulated time, so pausing holds it.
+      const simulated = substeps * raceParams.dt
+      if (phase === 'countdown') {
+        countdown -= simulated
+        if (countdown <= 0) {
+          for (const o of engine.bodies) {
+            o.grabbed = false
+            o.vel.fill(0)
+          }
+          phase = 'racing'
+          sinceStart = 0
+          renderer?.setGate(null)
+        }
+      } else if (phase === 'racing') {
+        sinceStart += simulated
+      }
     }
 
     if (engine && renderer) {
@@ -184,6 +221,9 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         particles: engine?.n ?? 0,
         substeps: substepTotal / frames,
         ducks: engine?.bodies.length ?? 0,
+        phase,
+        countdown,
+        sinceStart,
         status: noWebGpu ? 'no-webgpu' : !engine ? 'starting' : paused ? 'paused' : 'running',
       })
       frames = 0
@@ -204,7 +244,13 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     startRace(count) {
       if (!engine) return
       engine.removeBody()
-      for (const center of startingGrid(count)) engine.addBody({ center, size: raceView.duckSize })
+      const line = startLine(count)
+      for (const center of line.positions) engine.addBody({ center, size: line.size })
+      // Held at the gate (kinematic at their spot) until the countdown ends.
+      for (const o of engine.bodies) o.grabbed = true
+      renderer?.setGate(line.gate)
+      phase = 'countdown'
+      countdown = COUNTDOWN
     },
     dropDuck() {
       // Just downstream of the inlet, above the upper reach, on the centreline.
@@ -214,6 +260,8 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     },
     clearDucks() {
       engine?.removeBody()
+      renderer?.setGate(null)
+      phase = 'idle'
     },
     dispose() {
       generation++

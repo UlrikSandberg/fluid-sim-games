@@ -12,6 +12,7 @@ import { defaultRiverLayout, estimateParticles, riverLayout, type RiverLayout } 
 export function RiverRace() {
   const canvasHostRef = useRef<HTMLDivElement>(null)
   const hudRef = useRef<HTMLDivElement>(null)
+  const countdownRef = useRef<HTMLDivElement>(null)
   const controllerRef = useRef<RaceController | null>(null)
   const [paused, setPaused] = useState(false)
   const [noWebGpu, setNoWebGpu] = useState(false)
@@ -23,6 +24,13 @@ export function RiverRace() {
     if (!host) return
     const controller = startRaceLoop(host, (s) => {
       if (s.status === 'no-webgpu') setNoWebGpu(true)
+      // 3, 2, 1 while the ducks hang at the gate, then GO! for a second.
+      if (countdownRef.current) {
+        const text =
+          s.phase === 'countdown' ? String(Math.max(1, Math.ceil(s.countdown))) : s.phase === 'racing' && s.sinceStart < 1 ? 'GO!' : ''
+        countdownRef.current.textContent = text
+        countdownRef.current.style.display = text ? 'block' : 'none'
+      }
       if (hudRef.current) {
         hudRef.current.textContent =
           `GPU · ${s.fps.toFixed(0)} fps · ${s.particles.toLocaleString()} particles · ${s.ducks} ducks · ` +
@@ -74,6 +82,7 @@ export function RiverRace() {
     <div className="app">
       <div ref={canvasHostRef} className="canvas-host canvas-3d" />
       <Hud ref={hudRef} />
+      <div ref={countdownRef} className="countdown" style={{ display: 'none' }} />
       {noWebGpu && (
         <div className="notice">
           The river needs WebGPU (recent Chrome, Edge or Safari). The 3D Sandbox runs on the CPU.

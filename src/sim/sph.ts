@@ -600,21 +600,35 @@ export function integrateObstacle(o: Obstacle, p: Params, frame?: FrameMotion) {
   }
 }
 
-// Keeps floating bodies from passing through each other. Each is treated as a
-// sphere of radius equal to its largest half size (rough, but ducks only need to
-// bump): overlapping pairs are separated in inverse proportion to their masses and
-// their approach velocity is reversed with restitution. Pairs in a fixed order.
+// How far a box reaches from its centre along unit direction n (3 components):
+// the sum of its half sizes projected onto n.
+function boxReach(o: Obstacle, n: number[]): number {
+  let reach = 0
+  for (let k = 0; k < o.halfSize.length; k++) {
+    const axis = rotate(o.q, [k === 0 ? 1 : 0, k === 1 ? 1 : 0, k === 2 ? 1 : 0])
+    reach += Math.abs(axis[0] * n[0] + axis[1] * n[1] + axis[2] * n[2]) * o.halfSize[k]
+  }
+  return reach
+}
+
+// Keeps floating bodies from passing through each other. Two boxes overlap
+// (approximately) when their centres are closer than the sum of their reaches
+// along the line between the centres: exact for boxes meeting face-on, so ducks
+// can sit side by side at a start line, a little conservative at corners.
+// Overlapping pairs are separated in inverse proportion to their masses and their
+// approach velocity is reversed with restitution. Pairs in a fixed order.
 export function collideBodies(bodies: Obstacle[], p: Params) {
   const dim = dimOf(p)
   for (let i = 0; i < bodies.length; i++) {
     for (let j = i + 1; j < bodies.length; j++) {
       const a = bodies[i]
       const b = bodies[j]
-      const d = a.center.map((v, k) => v - b.center[k])
+      const d = [0, 1, 2].map((k) => (k < dim ? a.center[k] - b.center[k] : 0))
       const dist = Math.hypot(...d)
-      const reach = Math.max(...a.halfSize) + Math.max(...b.halfSize)
-      if (dist >= reach || dist < 1e-9) continue
+      if (dist < 1e-9) continue
       const n = d.map((v) => v / dist)
+      const reach = boxReach(a, n) + boxReach(b, n)
+      if (dist >= reach) continue
       const ma = obstacleMass(p, a.halfSize)
       const mb = obstacleMass(p, b.halfSize)
       const overlap = reach - dist
