@@ -1,9 +1,10 @@
 import type { Params } from '../../sim/params'
 import {
-  createState, integrateObstacle, makeObstacle, obstacleLattice, setObstacle, step,
+  collideBodies, createState, integrateObstacle, makeObstacle, obstacleLattice, setObstacle, step,
   type FrameMotion, type Obstacle, type SimState,
 } from '../../sim/sph'
-import { GpuSph, requestDevice, type GpuScene } from '../../gpu/sphGpu'
+import { GpuSph, requestDevice, type GpuBody, type GpuScene } from '../../gpu/sphGpu'
+import { MAX_BODIES } from '../../gpu/sphShaders'
 
 export type EngineKind = 'cpu' | 'gpu'
 
@@ -61,18 +62,18 @@ export class CpuEngine implements FluidEngine {
   dispose() {}
 }
 
-// The GPU solver (src/gpu). The body is integrated here on the CPU, once per
+// The GPU solver (src/gpu). Bodies are integrated here on the CPU, once per
 // frame, from the force and torque the GPU summed over the previous frame's
-// substeps (one or two frames of lag, while a light bob takes ~2 s).
+// substeps (one or two frames of lag, while a light bob takes ~2 s), then bumped
+// apart where they overlap.
 export class GpuEngine implements FluidEngine {
   readonly kind = 'gpu'
-  obstacle: Obstacle | null = null
-  // Extra constraint on the body after each step (e.g. the river's curved banks,
+  // Extra constraint on each body after each step (e.g. the river's curved banks,
   // which the CPU-side rigid body doesn't otherwise know about).
   constrainBody: ((o: Obstacle) => void) | null = null
   private readonly gpu: GpuSph
   private readonly params: Params
-  private lattice: { local: Float32Array; psi: Float32Array } | null = null
+  private bodyList: GpuBody[] = []
   private lastReadback: object | null = null
   private cached: SimState | null = null
 
@@ -97,22 +98,36 @@ export class GpuEngine implements FluidEngine {
     return this.gpu.n
   }
 
+  get bodies(): Obstacle[] {
+    return this.bodyList.map((b) => b.o)
+  }
+
+  // The first body (the sandbox has at most one).
+  get obstacle(): Obstacle | null {
+    return this.bodyList[0]?.o ?? null
+  }
+
   step(substeps: number, frame: FrameMotion, gravity: number[]) {
     this.params.gravity = gravity
-    const o = this.obstacle
-    if (o && this.lattice && substeps > 0) {
+    if (this.bodyList.length > 0 && substeps > 0) {
       const f = this.gpu.latest?.bodyForce
-      for (let k = 0; k < 3; k++) {
-        o.force[k] = f ? f[k] : 0
-        o.torque[k] = f ? f[3 + k] : 0
-      }
+      this.bodyList.forEach(({ o }, b) => {
+        for (let k = 0; k < 3; k++) {
+          o.force[k] = f ? f[6 * b + k] : 0
+          o.torque[k] = f ? f[6 * b + 3 + k] : 0
+        }
+      })
+      const bodies = this.bodies
       for (let k = 0; k < substeps; k++) {
-        integrateObstacle(o, this.params, frame)
-        this.constrainBody?.(o)
+        for (const o of bodies) {
+          integrateObstacle(o, this.params, frame)
+          this.constrainBody?.(o)
+        }
+        collideBodies(bodies, this.params)
       }
-      this.gpu.setBody(o, this.lattice.local, this.lattice.psi)
+      this.gpu.setBodies(this.bodyList)
     }
-    this.gpu.step(substeps, frame, gravity, o)
+    this.gpu.step(substeps, frame, gravity, this.bodies)
   }
 
   view(): SimState | null {
@@ -141,15 +156,25 @@ export class GpuEngine implements FluidEngine {
     return this.cached
   }
 
+  // Adds a body (up to the GPU's limit); returns false when full. Bodies are only
+  // ever appended or all removed, so the GPU's per-body force slots stay aligned.
+  addBody(rect: { center: number[]; size: number[] }): boolean {
+    if (this.bodyList.length >= MAX_BODIES) return false
+    const o = makeObstacle(this.params, rect)
+    this.bodyList.push({ o, ...obstacleLattice(o, this.params) })
+    this.gpu.setBodies(this.bodyList)
+    return true
+  }
+
+  // The sandbox's single box: replaces any bodies.
   dropBody(rect: { center: number[]; size: number[] }) {
-    this.obstacle = makeObstacle(this.params, rect)
-    this.lattice = obstacleLattice(this.obstacle, this.params)
-    this.gpu.setBody(this.obstacle, this.lattice.local, this.lattice.psi)
+    this.bodyList = []
+    this.addBody(rect)
   }
 
   removeBody() {
-    this.obstacle = null
-    this.lattice = null
+    this.bodyList = []
+    this.gpu.setBodies([])
   }
 
   dispose() {

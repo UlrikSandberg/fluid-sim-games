@@ -12,13 +12,16 @@ export interface RaceStats {
   fps: number
   particles: number
   substeps: number
+  ducks: number
   status: 'starting' | 'running' | 'paused' | 'no-webgpu'
 }
 
 export interface RaceController {
   reset(): void // rebuild the course from riverLayout
   setPaused(paused: boolean): void
-  dropDuck(): void
+  startRace(count: number): void // clear the ducks and line up `count` at the inlet
+  dropDuck(): void // add one duck at the inlet
+  clearDucks(): void
   dispose(): void
 }
 
@@ -31,6 +34,7 @@ export const raceView = {
   current: { ...DEFAULT_CURRENT },
   gravity: 9.8,
   duckSize: [1.6, 1, 1.2],
+  duckCount: 4,
 }
 
 const STATS_INTERVAL_MS = 250
@@ -66,6 +70,26 @@ function bankConstraint(o: Obstacle) {
     o.vel[0] -= 1.3 * vn * n[0]
     o.vel[2] -= 1.3 * vn * n[2]
   }
+}
+
+// Starting positions for `count` ducks: rows of lanes across the channel just
+// downstream of the inlet, dropped a little above the water, spaced so their
+// collision spheres don't touch.
+function startingGrid(count: number): number[][] {
+  const c = courseOf(riverLayout)
+  const size = raceView.duckSize
+  const gap = 2 * Math.max(...size.map((s) => s / 2)) + 0.4
+  const perRow = Math.max(1, Math.floor((2 * c.halfWidth - 1) / gap))
+  const y = riverLayout.ledgeHeight + riverLayout.upperDepth + size[1] / 2 + 0.5
+  const out: number[][] = []
+  for (let i = 0; i < count; i++) {
+    const row = Math.floor(i / perRow)
+    const inRow = Math.min(perRow, count - row * perRow)
+    const lane = i % perRow
+    const x = 2 + gap * row
+    out.push([x, y, c.centerline(x) + (lane - (inRow - 1) / 2) * gap])
+  }
+  return out
 }
 
 // The river race's loop: the GPU solver running the course from riverScene,
@@ -142,8 +166,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     }
 
     if (engine && renderer) {
-      const o = engine.obstacle
-      renderer.setBody(o ? o.center : null, o ? o.halfSize : [], o ? o.q : [1, 0, 0, 0])
+      renderer.setDucks(engine.bodies)
       view = engine.view()
       if (view) {
         renderer.updatePositions(view.pos, view.n)
@@ -160,6 +183,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         fps: (frames * 1000) / (now - statsStart),
         particles: engine?.n ?? 0,
         substeps: substepTotal / frames,
+        ducks: engine?.bodies.length ?? 0,
         status: noWebGpu ? 'no-webgpu' : !engine ? 'starting' : paused ? 'paused' : 'running',
       })
       frames = 0
@@ -177,11 +201,19 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     setPaused(p) {
       paused = p
     },
+    startRace(count) {
+      if (!engine) return
+      engine.removeBody()
+      for (const center of startingGrid(count)) engine.addBody({ center, size: raceView.duckSize })
+    },
     dropDuck() {
       // Just downstream of the inlet, above the upper reach, on the centreline.
       const x = 3
       const y = riverLayout.ledgeHeight + riverLayout.upperDepth + raceView.duckSize[1] + 1
-      engine?.dropBody({ center: [x, y, courseOf(riverLayout).centerline(x)], size: raceView.duckSize })
+      engine?.addBody({ center: [x, y, courseOf(riverLayout).centerline(x)], size: raceView.duckSize })
+    },
+    clearDucks() {
+      engine?.removeBody()
     },
     dispose() {
       generation++

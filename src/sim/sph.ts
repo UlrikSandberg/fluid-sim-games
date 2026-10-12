@@ -600,6 +600,40 @@ export function integrateObstacle(o: Obstacle, p: Params, frame?: FrameMotion) {
   }
 }
 
+// Keeps floating bodies from passing through each other. Each is treated as a
+// sphere of radius equal to its largest half size (rough, but ducks only need to
+// bump): overlapping pairs are separated in inverse proportion to their masses and
+// their approach velocity is reversed with restitution. Pairs in a fixed order.
+export function collideBodies(bodies: Obstacle[], p: Params) {
+  const dim = dimOf(p)
+  for (let i = 0; i < bodies.length; i++) {
+    for (let j = i + 1; j < bodies.length; j++) {
+      const a = bodies[i]
+      const b = bodies[j]
+      const d = a.center.map((v, k) => v - b.center[k])
+      const dist = Math.hypot(...d)
+      const reach = Math.max(...a.halfSize) + Math.max(...b.halfSize)
+      if (dist >= reach || dist < 1e-9) continue
+      const n = d.map((v) => v / dist)
+      const ma = obstacleMass(p, a.halfSize)
+      const mb = obstacleMass(p, b.halfSize)
+      const overlap = reach - dist
+      for (let k = 0; k < dim; k++) {
+        a.center[k] += (n[k] * overlap * mb) / (ma + mb)
+        b.center[k] -= (n[k] * overlap * ma) / (ma + mb)
+      }
+      let vn = 0
+      for (let k = 0; k < dim; k++) vn += (a.vel[k] - b.vel[k]) * n[k]
+      if (vn >= 0) continue
+      const impulse = (-(1 + p.restitution) * vn) / (1 / ma + 1 / mb)
+      for (let k = 0; k < dim; k++) {
+        a.vel[k] += (impulse * n[k]) / ma
+        b.vel[k] -= (impulse * n[k]) / mb
+      }
+    }
+  }
+}
+
 const CONTACT_FRICTION = 0.5 // Coulomb μ between the body and the walls
 
 // Rigid-body contact between the box's corners and the domain walls. Each

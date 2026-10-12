@@ -4,7 +4,7 @@ import { makeKernels } from '../sim/kernels'
 import { buildGrid, createGrid } from '../sim/spatialHash'
 import { createState, type FrameMotion, type Obstacle, type SolidBox } from '../sim/sph'
 import { rotate } from '../sim/quat'
-import { MAX_BOXES, PARAMS_VEC4S, WORKGROUP, sphWgsl } from './sphShaders'
+import { BODY_VEC4S, MAX_BODIES, MAX_BOXES, PARAMS_VEC4S, WORKGROUP, sphWgsl } from './sphShaders'
 
 // The 3D SPH solver on the GPU (WebGPU compute). It runs a GpuScene: initial
 // fluid positions and static boundary particles (built by the CPU code, so the
@@ -14,14 +14,23 @@ import { MAX_BOXES, PARAMS_VEC4S, WORKGROUP, sphWgsl } from './sphShaders'
 //
 // Per frame the caller runs `substeps` steps in one submission and gets a
 // readback of positions, velocities and density/pressure/neighbours (plus the
-// body's force) one or two frames later; rendering uses the newest readback.
-// The floating body is integrated on the CPU once per frame from the GPU's
+// bodies' forces) one or two frames later; rendering uses the newest readback.
+// Floating bodies are integrated on the CPU once per frame from the GPU's
 // summed force and torque (see integrateObstacle).
 
 const BODY_FORCE_SCALE = 0.5 // fixed-point scale for the force/torque atomics
-// Body boundary particles the buffer holds: an 8×8×8 box (the panel's maximum)
-// at spacing 0.5 has ~2400, and resizing would invalidate the bind group.
+// Body boundary particles the buffer holds, all bodies together: an 8×8×8 box
+// (the sandbox panel's maximum) at spacing 0.5 has ~2400, a duck ~100; resizing
+// would invalidate the bind group.
 const MAX_BODY_PARTICLES = 4096
+
+// A body as the GPU sees it: its pose (an Obstacle) and its boundary particles
+// in the body frame with their ψ (from obstacleLattice).
+export interface GpuBody {
+  o: Obstacle
+  local: Float32Array
+  psi: Float32Array
+}
 
 export interface GpuScene {
   fluid: Float32Array // initial positions, stride 3
@@ -48,7 +57,7 @@ export interface GpuReadback {
   pos: Float32Array // stride 4: x, y, z, 0
   vel: Float32Array // stride 4
   aux: Float32Array // stride 4: density, pressure, neighbours, 0
-  bodyForce: number[] // force xyz, torque xyz, averaged per substep
+  bodyForce: number[] // per body: force xyz, torque xyz, averaged per substep
 }
 
 // The solver uses six storage buffers, within the 8 per stage WebGPU guarantees,
@@ -71,13 +80,13 @@ export class GpuSph {
   private readonly particles: GPUBuffer // A (state) then B (cell-sorted)
   private readonly fluid: GPUBuffer // aux then v*
   private readonly cellAtomics: GPUBuffer
-  private readonly boundary: GPUBuffer // walls then the body
+  private readonly boundary: GPUBuffer // walls then the bodies
   private readonly bodyForce: GPUBuffer
   private readonly nWall: number
   private readonly staging: { buffer: GPUBuffer; busy: boolean }[]
   private readonly numCells: number
   private readonly grid: { min: number[]; cellSize: number; cells: number[] }
-  private bodyCount = 0
+  private bodyRanges: [number, number][] = [] // first particle, count, per body
   private disposed = false
   private readonly boxes: SolidBox[]
   private readonly recycle: GpuScene['recycle']
@@ -131,7 +140,7 @@ export class GpuSph {
     device.queue.writeBuffer(indices, (n + C + 1) * 4, wallGrid.cellStart)
     this.cellAtomics = make((2 * C + 1) * 4)
     this.boundary = make((nb + 2 * MAX_BODY_PARTICLES) * 16, walls)
-    this.bodyForce = make(8 * 4)
+    this.bodyForce = make(MAX_BODIES * 6 * 4)
     this.buffers = [this.uniform, this.particles, this.fluid, indices, this.cellAtomics, this.boundary, this.bodyForce]
 
     const layout = device.createBindGroupLayout({
@@ -158,44 +167,45 @@ export class GpuSph {
       integrate: pipeline('integrate'),
     }
 
-    const readbackSize = n * 32 + n * 16 + 32
+    const readbackSize = n * 32 + n * 16 + MAX_BODIES * 24
     this.staging = [0, 1].map(() => ({
       buffer: device.createBuffer({ size: readbackSize, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }),
       busy: false,
     }))
   }
 
-  // Uploads the body's boundary particles (tank coordinates) for the coming
-  // frame, or removes the body with null. `local`/`psi` come from obstacleLattice.
-  setBody(o: Obstacle | null, local: Float32Array, psi: Float32Array) {
-    if (!o) {
-      this.bodyCount = 0
-      return
-    }
-    const m = psi.length
-    if (m > MAX_BODY_PARTICLES) throw new Error(`body has ${m} boundary particles; the GPU buffer holds ${MAX_BODY_PARTICLES}`)
-    const data = new Float32Array(m * 8)
-    for (let b = 0; b < m; b++) {
-      const r = rotate(o.q, [local[b * 3], local[b * 3 + 1], local[b * 3 + 2]])
+  // Uploads the bodies' boundary particles (tank coordinates) for the coming
+  // frame, placed from each body's pose with velocity v + ω × r.
+  setBodies(bodies: GpuBody[]) {
+    if (bodies.length > MAX_BODIES) throw new Error(`at most ${MAX_BODIES} bodies`)
+    const total = bodies.reduce((a, b) => a + b.psi.length, 0)
+    if (total > MAX_BODY_PARTICLES) throw new Error(`${total} body particles; the GPU buffer holds ${MAX_BODY_PARTICLES}`)
+    const data = new Float32Array(Math.max(total, 1) * 8)
+    this.bodyRanges = []
+    let k = 0
+    for (const { o, local, psi } of bodies) {
+      this.bodyRanges.push([k, psi.length])
       const w = o.omega
-      data.set([o.center[0] + r[0], o.center[1] + r[1], o.center[2] + r[2], psi[b]], b * 8)
-      data.set([
-        o.vel[0] + w[1] * r[2] - w[2] * r[1],
-        o.vel[1] + w[2] * r[0] - w[0] * r[2],
-        o.vel[2] + w[0] * r[1] - w[1] * r[0],
-        0,
-      ], b * 8 + 4)
+      for (let b = 0; b < psi.length; b++, k++) {
+        const r = rotate(o.q, [local[b * 3], local[b * 3 + 1], local[b * 3 + 2]])
+        data.set([o.center[0] + r[0], o.center[1] + r[1], o.center[2] + r[2], psi[b]], k * 8)
+        data.set([
+          o.vel[0] + w[1] * r[2] - w[2] * r[1],
+          o.vel[1] + w[2] * r[0] - w[0] * r[2],
+          o.vel[2] + w[0] * r[1] - w[1] * r[0],
+          0,
+        ], k * 8 + 4)
+      }
     }
-    this.device.queue.writeBuffer(this.boundary, this.nWall * 16, data)
-    this.bodyCount = m
+    if (total > 0) this.device.queue.writeBuffer(this.boundary, this.nWall * 16, data)
   }
 
   // Runs `substeps` steps with the given frame motion and gravity (tank
   // coordinates) and the current body pose, then starts a readback if a staging
   // buffer is free.
-  step(substeps: number, frame: FrameMotion, gravity: number[], body: Obstacle | null) {
+  step(substeps: number, frame: FrameMotion, gravity: number[], bodies: Obstacle[]) {
     if (this.disposed || substeps === 0) return
-    this.writeParams(frame, gravity, body)
+    this.writeParams(frame, gravity, bodies)
     const encoder = this.device.createCommandEncoder()
     encoder.clearBuffer(this.bodyForce)
     const groups = Math.ceil(this.n / WORKGROUP)
@@ -219,7 +229,7 @@ export class GpuSph {
     if (slot) {
       encoder.copyBufferToBuffer(this.particles, 0, slot.buffer, 0, this.n * 32)
       encoder.copyBufferToBuffer(this.fluid, 0, slot.buffer, this.n * 32, this.n * 16)
-      encoder.copyBufferToBuffer(this.bodyForce, 0, slot.buffer, this.n * 48, 32)
+      encoder.copyBufferToBuffer(this.bodyForce, 0, slot.buffer, this.n * 48, MAX_BODIES * 24)
     }
     this.device.queue.submit([encoder.finish()])
     if (slot) this.readBack(slot, substeps)
@@ -240,7 +250,7 @@ export class GpuSph {
           vel.set(particles.subarray(i * 8 + 4, i * 8 + 8), i * 4)
         }
         const aux = new Float32Array(new Float32Array(data, n * 32, n * 4))
-        const force = new Int32Array(data, n * 48, 6)
+        const force = new Int32Array(data, n * 48, MAX_BODIES * 6)
         const bodyForce = Array.from(force, (v) => v / BODY_FORCE_SCALE / substeps)
         slot.buffer.unmap()
         slot.busy = false
@@ -252,7 +262,7 @@ export class GpuSph {
     )
   }
 
-  private writeParams(frame: FrameMotion, gravity: number[], body: Obstacle | null) {
+  private writeParams(frame: FrameMotion, gravity: number[], bodies: Obstacle[]) {
     const p = this.params
     const f = new Float32Array(this.uniformData)
     const u = new Uint32Array(this.uniformData)
@@ -260,7 +270,8 @@ export class GpuSph {
     const set = (slot: number, values: number[], ints = false) => {
       for (let c = 0; c < values.length; c++) (ints ? u : f)[slot * 4 + c] = values[c]
     }
-    set(0, [this.n, this.numCells, body ? this.bodyCount : 0, this.nWall], true)
+    const nBodies = Math.min(bodies.length, this.bodyRanges.length)
+    set(0, [this.n, this.numCells, nBodies, this.nWall], true)
     set(1, [...this.grid.cells, 0], true)
     set(2, [...this.grid.min, this.grid.cellSize])
     set(3, [k.h, k.h2, k.poly6Coef, k.spikyGradCoef])
@@ -272,35 +283,34 @@ export class GpuSph {
     set(9, [...frame.pivot, 0])
     set(10, [...p.domain.min, 0])
     set(11, [...p.domain.max, 0])
-    if (body) {
-      set(12, [...body.center, 1])
-      set(13, [...body.vel, 0])
-      set(14, [...body.omega, 0])
-      set(15, [...body.halfSize, BODY_FORCE_SCALE])
-      for (let c = 0; c < 3; c++) set(16 + c, [...rotate(body.q, [c === 0 ? 1 : 0, c === 1 ? 1 : 0, c === 2 ? 1 : 0]), 0])
-      // Bounding box of the rotated body, grown by h (fluid outside it can't touch it).
-      const ext = [0, 0, 0]
-      for (let c = 0; c < 3; c++) {
-        const axis = rotate(body.q, [c === 0 ? 1 : 0, c === 1 ? 1 : 0, c === 2 ? 1 : 0])
-        for (let d = 0; d < 3; d++) ext[d] += Math.abs(axis[d]) * body.halfSize[c]
-      }
-      set(19, [...body.center.map((v, d) => v - ext[d] - p.h), 0])
-      set(20, [...body.center.map((v, d) => v + ext[d] + p.h), 0])
-    } else {
-      set(12, [0, 0, 0, 0])
-      set(15, [1, 1, 1, BODY_FORCE_SCALE])
-    }
-    set(21, [this.current.speed, this.current.rate, 0, 0])
+    set(12, [BODY_FORCE_SCALE, 0, 0, 0])
+    set(13, [this.current.speed, this.current.rate, 0, 0])
     const rc = this.recycle
-    set(22, rc ? [rc.exitX, rc.inletX, rc.lift, 1] : [0, 0, 0, 0])
-    set(23, [this.boxes.length, 0, 0, 0], true)
+    set(14, rc ? [rc.exitX, rc.inletX, rc.lift, 1] : [0, 0, 0, 0])
+    set(15, [this.boxes.length, 0, 0, 0], true)
     const ch = this.channel
-    set(24, ch ? [ch.amplitude, ch.wavenumber, ch.halfWidth, 1] : [0, 0, 0, 0])
-    set(25, ch ? [ch.centerZ, 0, 0, 0] : [0, 0, 0, 0])
+    set(16, ch ? [ch.amplitude, ch.wavenumber, ch.halfWidth, 1] : [0, 0, 0, 0])
+    set(17, ch ? [ch.centerZ, 0, 0, 0] : [0, 0, 0, 0])
     this.boxes.forEach((box, b) => {
-      set(26 + 2 * b, [...box.min, 0])
-      set(27 + 2 * b, [...box.max, 0])
+      set(18 + 2 * b, [...box.min, 0])
+      set(19 + 2 * b, [...box.max, 0])
     })
+    const bodySlot = 18 + 2 * MAX_BOXES
+    for (let b = 0; b < nBodies; b++) {
+      const o = bodies[b]
+      const base = bodySlot + b * BODY_VEC4S
+      const axes = [0, 1, 2].map((c) => rotate(o.q, [c === 0 ? 1 : 0, c === 1 ? 1 : 0, c === 2 ? 1 : 0]))
+      // Bounding box of the rotated body, grown by h (fluid outside it can't touch it).
+      const ext = [0, 1, 2].map((d) => axes.reduce((a, axis, c) => a + Math.abs(axis[d]) * o.halfSize[c], 0))
+      set(base, [...o.center, 0])
+      set(base + 1, [...o.vel, 0])
+      set(base + 2, [...o.omega, 0])
+      set(base + 3, [...o.halfSize, 0])
+      for (let c = 0; c < 3; c++) set(base + 4 + c, [...axes[c], 0])
+      set(base + 7, [...o.center.map((v, d) => v - ext[d] - p.h), 0])
+      set(base + 8, [...o.center.map((v, d) => v + ext[d] + p.h), 0])
+      set(base + 9, [...this.bodyRanges[b], 0, 0], true)
+    }
     this.device.queue.writeBuffer(this.uniform, 0, this.uniformData)
   }
 

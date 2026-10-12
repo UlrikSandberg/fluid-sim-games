@@ -25,9 +25,9 @@ export function RiverRace() {
       if (s.status === 'no-webgpu') setNoWebGpu(true)
       if (hudRef.current) {
         hudRef.current.textContent =
-          `GPU · ${s.fps.toFixed(0)} fps · ${s.particles.toLocaleString()} particles · ` +
+          `GPU · ${s.fps.toFixed(0)} fps · ${s.particles.toLocaleString()} particles · ${s.ducks} ducks · ` +
           (s.status === 'running' ? `${s.substeps.toFixed(1)} substeps/frame` : s.status) +
-          `\ndrag: orbit · right-drag: pan · wheel: zoom · D: drop a duck · Space: pause`
+          `\nS: start race · D: add a duck · drag: orbit · right-drag: pan · wheel: zoom · Space: pause`
       }
     })
     controllerRef.current = controller
@@ -50,7 +50,7 @@ export function RiverRace() {
     setStyle(s)
   }
 
-  // D drops a duck, Space pauses, number keys pick the colour mode, V toggles
+  // S starts a race, D adds a duck, Space pauses, number keys pick the colour mode, V toggles
   // water/particles (all ignored while a control has focus).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -59,6 +59,7 @@ export function RiverRace() {
       const mode = colorModes[Number(e.key) - 1]
       if (mode) changeColorMode(mode.id)
       else if (e.code === 'KeyD') controllerRef.current?.dropDuck()
+      else if (e.code === 'KeyS') controllerRef.current?.startRace(raceView.duckCount)
       else if (e.code === 'KeyV') changeStyle(style === 'water' ? 'particles' : 'water')
       else if (e.code === 'Space') {
         e.preventDefault()
@@ -136,8 +137,8 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
         <button onClick={reset} className={resetPending ? 'pending' : undefined}>
           {resetPending ? 'Reset to apply' : 'Reset'}
         </button>
-        <button onClick={() => controller()?.dropDuck()} title="D">
-          Drop duck
+        <button onClick={() => controller()?.startRace(raceView.duckCount)} title="S">
+          Start race
         </button>
       </div>
 
@@ -175,7 +176,15 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
         </p>
       </Section>
 
-      <Section title="Duck">
+      <Section title="Ducks">
+        <Slider label="Racers" value={raceView.duckCount} min={1} max={8} step={1} format={(v) => v.toFixed(0)}
+          onChange={(v) => update(() => (raceView.duckCount = v))} />
+        <div className="buttons">
+          <button onClick={() => controller()?.dropDuck()} title="D">
+            Add one
+          </button>
+          <button onClick={() => controller()?.clearDucks()}>Clear</button>
+        </div>
         <Slider label="Density" value={raceParams.obstacleDensity} min={0.1} max={2} step={0.05}
           format={(v) => `${v.toFixed(2)}ρ₀`} onChange={(v) => update(() => (raceParams.obstacleDensity = v))} />
         <Slider label="Size" value={duckScale} min={0.5} max={2.5} step={0.1} format={(v) => `${v.toFixed(1)}×`}

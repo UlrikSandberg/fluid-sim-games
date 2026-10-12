@@ -1,7 +1,7 @@
 // WGSL for the GPU SPH solver (3D). Same physics as src/sim/sph.ts: Poly6
 // density, Spiky pressure gradient, linear/Tait EOS clamped at 0, mirrored
 // pressure from boundary particles, XSPH with free-slip walls, the tank's
-// rotating-frame accelerations, and two-way coupling with one rigid body. Unlike
+// rotating-frame accelerations, and two-way coupling with rigid bodies. Unlike
 // the CPU version it is not bit-reproducible (atomics order the grid), which is
 // fine for the game.
 //
@@ -15,11 +15,27 @@ export const SCAN_THREADS = 256
 
 // Field order must match GpuSph.writeParams.
 export const MAX_BOXES = 4
-export const PARAMS_VEC4S = 26 + 2 * MAX_BOXES
+export const MAX_BODIES = 8
+export const BODY_VEC4S = 10 // per Body struct
+export const PARAMS_VEC4S = 18 + 2 * MAX_BOXES + BODY_VEC4S * MAX_BODIES
 
 export const sphWgsl = /* wgsl */ `
+// A rigid body (a box) the fluid pushes and is pushed by.
+struct Body {
+  center: vec4f,
+  vel: vec4f,
+  omega: vec4f,
+  half: vec4f,       // half sizes
+  rot0: vec4f,       // rotation matrix columns, body → tank
+  rot1: vec4f,
+  rot2: vec4f,
+  boxMin: vec4f,     // bounding box grown by h
+  boxMax: vec4f,
+  range: vec4u,      // first boundary particle within the body section, count
+}
+
 struct Params {
-  counts: vec4u,     // n, numCells, nBody, nWall
+  counts: vec4u,     // n, numCells, number of bodies, nWall
   cells: vec4u,      // cells per axis xyz
   gridMin: vec4f,    // grid origin xyz, cell size
   kernel: vec4f,     // h, h², poly6 coefficient, spiky gradient coefficient
@@ -31,21 +47,14 @@ struct Params {
   pivot: vec4f,
   domainMin: vec4f,
   domainMax: vec4f,
-  bodyCenter: vec4f, // xyz, active (0/1)
-  bodyVel: vec4f,
-  bodyOmega: vec4f,
-  bodyHalf: vec4f,   // half sizes xyz, fixed-point scale for force atomics
-  bodyRot0: vec4f,   // rotation matrix columns, body → tank
-  bodyRot1: vec4f,
-  bodyRot2: vec4f,
-  bodyBoxMin: vec4f, // body bounding box grown by h
-  bodyBoxMax: vec4f,
+  bodyMisc: vec4f,   // fixed-point scale for the force atomics
   current: vec4f,    // river current: target speed along +x, relaxation rate (0 = off)
   recycle: vec4f,    // past x = exitX, move to inletX + (x − exitX) and up by lift; enabled (0/1)
   boxCount: vec4u,   // static solid boxes in use
   channel: vec4f,    // winding channel: amplitude, wavenumber, half width, enabled (0/1)
   channel2: vec4f,   // centreline z at amplitude 0, 0, 0, 0
   boxes: array<vec4f, ${2 * MAX_BOXES}>, // min, max per box (static, solid)
+  bodies: array<Body, ${MAX_BODIES}>,
 }
 
 struct Particle {
@@ -60,8 +69,8 @@ struct Particle {
 //   fluid:       aux [0, n) (density, pressure, neighbours) · v* [n, 2n)
 //   indices:     cellOf [0, n) · cellStart [n, n+C+1) · wallCellStart [n+C+1, n+2C+2)
 //   cellAtomics: count [0, C+1) · cursor [C+1, 2C+1)
-//   boundary:    walls [0, nWall) (xyz, ψ; cell-sorted) · body [nWall, …) (pos.xyz ψ, vel.xyz 0)
-//   bodyForce:   force xyz, torque xyz (fixed point)
+//   boundary:    walls [0, nWall) (xyz, ψ; cell-sorted) · bodies [nWall, …) (pos.xyz ψ, vel.xyz 0 per particle)
+//   bodyForce:   per body: force xyz, torque xyz (fixed point)
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(2) var<storage, read_write> fluid: array<vec4f>;
@@ -72,8 +81,8 @@ struct Particle {
 
 fn cellStartAt(c: u32) -> u32 { return indices[P.counts.x + c]; }
 fn wallCellStartAt(c: u32) -> u32 { return indices[P.counts.x + P.counts.y + 1u + c]; }
-fn bodyAt(b: u32) -> vec4f { return boundary[P.counts.w + 2u * b]; }
-fn bodyVelAt(b: u32) -> vec3f { return boundary[P.counts.w + 2u * b + 1u].xyz; }
+fn bodyParticle(k: u32) -> vec4f { return boundary[P.counts.w + 2u * k]; }
+fn bodyParticleVel(k: u32) -> vec3f { return boundary[P.counts.w + 2u * k + 1u].xyz; }
 
 fn poly6(r2: f32) -> f32 {
   if (r2 >= P.kernel.y) { return 0.0; }
@@ -126,28 +135,29 @@ fn cellIndex(c: vec3i) -> u32 {
   return u32(c.x) + u32(c.y) * P.cells.x + u32(c.z) * P.cells.x * P.cells.y;
 }
 
-fn nearBody(x: vec3f) -> bool {
-  return P.bodyCenter.w > 0.5 && all(x >= P.bodyBoxMin.xyz) && all(x <= P.bodyBoxMax.xyz);
+fn nearBody(x: vec3f, b: u32) -> bool {
+  return all(x >= P.bodies[b].boxMin.xyz) && all(x <= P.bodies[b].boxMax.xyz);
 }
 
-fn toBody(v: vec3f) -> vec3f {
-  return vec3f(dot(P.bodyRot0.xyz, v), dot(P.bodyRot1.xyz, v), dot(P.bodyRot2.xyz, v));
+fn toBody(v: vec3f, b: u32) -> vec3f {
+  return vec3f(dot(P.bodies[b].rot0.xyz, v), dot(P.bodies[b].rot1.xyz, v), dot(P.bodies[b].rot2.xyz, v));
 }
 
-fn fromBody(v: vec3f) -> vec3f {
-  return P.bodyRot0.xyz * v.x + P.bodyRot1.xyz * v.y + P.bodyRot2.xyz * v.z;
+fn fromBody(v: vec3f, b: u32) -> vec3f {
+  return P.bodies[b].rot0.xyz * v.x + P.bodies[b].rot1.xyz * v.y + P.bodies[b].rot2.xyz * v.z;
 }
 
-// Adds force f acting at body particle position xb to the body's force/torque.
-fn pushOnBody(f: vec3f, xb: vec3f) {
-  let s = P.bodyHalf.w;
-  let t = cross(xb - P.bodyCenter.xyz, f);
-  atomicAdd(&bodyForce[0], i32(round(f.x * s)));
-  atomicAdd(&bodyForce[1], i32(round(f.y * s)));
-  atomicAdd(&bodyForce[2], i32(round(f.z * s)));
-  atomicAdd(&bodyForce[3], i32(round(t.x * s)));
-  atomicAdd(&bodyForce[4], i32(round(t.y * s)));
-  atomicAdd(&bodyForce[5], i32(round(t.z * s)));
+// Adds force f acting at body particle position xb to body b's force/torque.
+fn pushOnBody(b: u32, f: vec3f, xb: vec3f) {
+  let s = P.bodyMisc.x;
+  let t = cross(xb - P.bodies[b].center.xyz, f);
+  let o = 6u * b;
+  atomicAdd(&bodyForce[o], i32(round(f.x * s)));
+  atomicAdd(&bodyForce[o + 1u], i32(round(f.y * s)));
+  atomicAdd(&bodyForce[o + 2u], i32(round(f.z * s)));
+  atomicAdd(&bodyForce[o + 3u], i32(round(t.x * s)));
+  atomicAdd(&bodyForce[o + 4u], i32(round(t.y * s)));
+  atomicAdd(&bodyForce[o + 5u], i32(round(t.z * s)));
 }
 
 // [start, end) of the sorted array for the x-row of three cells around c at
@@ -251,9 +261,11 @@ fn density(@builtin(global_invocation_id) gid: vec3u) {
       }
     }
   }
-  if (nearBody(xi)) {
-    for (var b = 0u; b < P.counts.z; b++) {
-      let bp = bodyAt(b);
+  for (var b = 0u; b < P.counts.z; b++) {
+    if (!nearBody(xi, b)) { continue; }
+    let range = P.bodies[b].range;
+    for (var k = range.x; k < range.x + range.y; k++) {
+      let bp = bodyParticle(k);
       let d = xi - bp.xyz;
       let r2 = dot(d, d);
       if (r2 < P.kernel.y) {
@@ -305,15 +317,17 @@ fn accel(@builtin(global_invocation_id) gid: vec3u) {
       }
     }
   }
-  if (nearBody(xi)) {
-    for (var b = 0u; b < P.counts.z; b++) {
-      let bp = bodyAt(b);
+  for (var b = 0u; b < P.counts.z; b++) {
+    if (!nearBody(xi, b)) { continue; }
+    let range = P.bodies[b].range;
+    for (var k = range.x; k < range.x + range.y; k++) {
+      let bp = bodyParticle(k);
       let d = xi - bp.xyz;
       let r2 = dot(d, d);
       if (r2 < P.kernel.y && r2 > 1e-12) {
         let s = (bp.w * pi / (rhoi * rhoi)) * spikyOverR(sqrt(r2));
         a += s * d;
-        pushOnBody(-mass * s * d, bp.xyz);
+        pushOnBody(b, -mass * s * d, bp.xyz);
       }
     }
   }
@@ -347,16 +361,18 @@ fn integrate(@builtin(global_invocation_id) gid: vec3u) {
       }
     }
   }
-  if (nearBody(xi)) {
-    for (var b = 0u; b < P.counts.z; b++) {
-      let bp = bodyAt(b);
+  for (var b = 0u; b < P.counts.z; b++) {
+    if (!nearBody(xi, b)) { continue; }
+    let range = P.bodies[b].range;
+    for (var k = range.x; k < range.x + range.y; k++) {
+      let bp = bodyParticle(k);
       let d = xi - bp.xyz;
       let r2 = dot(d, d);
       if (r2 < P.kernel.y) {
-        let dv = bodyVelAt(b) - vs;
+        let dv = bodyParticleVel(k) - vs;
         let w = eps * bp.w * poly6(r2) / P.fluid.y;
         v += w * dv;
-        pushOnBody(-mass * w * dv / dt, bp.xyz);
+        pushOnBody(b, -mass * w * dv / dt, bp.xyz);
       }
     }
   }
@@ -366,21 +382,22 @@ fn integrate(@builtin(global_invocation_id) gid: vec3u) {
   let e = P.stepping.w;
 
   // Body push-out: mirror across the nearest face, reflect the relative velocity.
-  if (P.bodyCenter.w > 0.5) {
-    var local = toBody(x - P.bodyCenter.xyz);
-    let depth = P.bodyHalf.xyz + vec3f(r) - abs(local);
+  for (var b = 0u; b < P.counts.z; b++) {
+    let body = P.bodies[b];
+    var local = toBody(x - body.center.xyz, b);
+    let depth = body.half.xyz + vec3f(r) - abs(local);
     if (all(depth > vec3f(0.0))) {
       var face = 0;
       if (depth.y < depth[face]) { face = 1; }
       if (depth.z < depth[face]) { face = 2; }
       let sgn = select(-1.0, 1.0, local[face] >= 0.0);
       local[face] += sgn * 2.0 * depth[face];
-      let offset = fromBody(local);
-      x = P.bodyCenter.xyz + offset;
+      let offset = fromBody(local, b);
+      x = body.center.xyz + offset;
       var nLocal = vec3f(0.0);
       nLocal[face] = sgn;
-      let n = fromBody(nLocal);
-      let rel = v - (P.bodyVel.xyz + cross(P.bodyOmega.xyz, offset));
+      let n = fromBody(nLocal, b);
+      let rel = v - (body.vel.xyz + cross(body.omega.xyz, offset));
       let vn = dot(rel, n);
       if (vn < 0.0) { v -= (1.0 + e) * vn * n; }
     }

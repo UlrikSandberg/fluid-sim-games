@@ -24,7 +24,7 @@ const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r(null)))
 async function run(device: GPUDevice, sim: GpuSph, p: Params, seconds: number, frame: FrameMotion, gravity: number[]) {
   const batches = Math.round(seconds / p.dt / 25)
   for (let b = 0; b < batches; b++) {
-    sim.step(25, frame, gravity, null)
+    sim.step(25, frame, gravity, [])
     if (b % 8 === 7) await device.queue.onSubmittedWorkDone()
   }
   return fresh(device, sim, frame, gravity)
@@ -35,7 +35,7 @@ async function fresh(device: GPUDevice, sim: GpuSph, frame: FrameMotion, gravity
   await device.queue.onSubmittedWorkDone()
   const before = sim.latest
   for (let tries = 0; tries < 200; tries++) {
-    sim.step(1, frame, gravity, null)
+    sim.step(1, frame, gravity, [])
     await device.queue.onSubmittedWorkDone()
     await new Promise((r) => setTimeout(r, 5))
     if (sim.latest && sim.latest !== before) return sim.latest
@@ -205,7 +205,7 @@ export async function runGpuChecks(log: (line: string) => void = console.log): P
     await run(device, sim, q, 0.4, still(q), down) // warm up past the first collapse
     const steps = 100
     const t0 = performance.now()
-    for (let b = 0; b < steps / 25; b++) sim.step(25, still(q), down, null)
+    for (let b = 0; b < steps / 25; b++) sim.step(25, still(q), down, [])
     await device.queue.onSubmittedWorkDone()
     const ms = (performance.now() - t0) / steps
     log(`     ${n.toLocaleString()} particles: ${ms.toFixed(3)} ms/substep → ${Math.floor(16.7 / 4.2 / ms) >= 1 ? 'real time at 60 fps' : `${(1000 / (ms * 4.2)).toFixed(0)} fps of real time`}`)

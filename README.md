@@ -125,7 +125,9 @@ ledge as a waterfall and winds on along the lower reach. The default course has 
   upper and lower depth. The panel estimates the particle count before you apply.
 - **Water** (live): current speed and pull, gravity, stiffness, XSPH ε, and dt with
   its CFL limit.
-- **Duck:** density (live) and size (next drop). `D` drops one at the inlet.
+- **Ducks:** racers (1–8), Start race (`S`: clears the river and lines the ducks up
+  in rows of lanes at the inlet), Add one (`D`), Clear, density (live), size (next
+  start).
 
 **What makes it a river** (solver features in `src/gpu`, usable by the sandbox too):
 - **Winding channel:** the centreline is z = z₀ + A·sin(kx). The banks are boundary
@@ -141,11 +143,19 @@ ledge as a waterfall and winds on along the lower reach. The default course has 
 - **Recycling:** water near the far end re-enters at the inlet, lifted onto the ledge
   and keeping its place across the channel, so the river never drains.
 
-The duck is kept between the banks on the CPU side (`constrainBody` on the GPU
-engine). The banks render as solid blocks of land whose height follows the water.
-Next: real ducks (several, with collisions), random swirls, obstacles and
-gravity-flip power-ups, and race rules (start, finish, winner, a camera that follows
-the leaders). Known roughness: some splash where recycled water re-enters.
+**Ducks:** up to 8 rigid bodies on the GPU (`MAX_BODIES`), each with its own range
+of boundary particles and its own force/torque atomics; the shader loops over the
+bodies near each particle. Each duck's physics is a box hull, the shape the
+Archimedes tests cover. The rubber-duck look (body, head, beak, eyes, tail, one
+colour per racer) is only a mesh. On the CPU, each duck is integrated from its GPU
+forces, kept between the banks (`constrainBody`), and bumped off the others
+(`collideBodies`: spheres of their largest half size, separated by mass, bounced
+with restitution). An 8-duck race runs at 60 fps; the ducks jostle over the
+waterfall and spread out along the lower reach.
+
+Next: race rules (start gate, finish line, winner, names, a camera that follows the
+leaders), then random swirls, obstacles and gravity-flip power-ups. Known roughness:
+some splash where recycled water re-enters.
 
 ## Layout
 

@@ -5,6 +5,52 @@ import { WaterSurface3D } from './waterSurface3d'
 
 const BACKGROUND = 0x0d1117
 
+// Duck colours, one per racer.
+export const DUCK_COLORS = [0xf2c230, 0xff8a3d, 0xff5d8f, 0x7ad151, 0x3fb7e8, 0xb07cff, 0xf5f5f5, 0xff4d4d]
+
+// A rubber duck sized to a physics hull with the given half sizes, facing +x in
+// its body frame: an ellipsoid body, a head, a beak, eyes and a tail. The hull
+// (a box) is what the fluid sees; this is only the look.
+function makeDuck(half: number[], color: number): THREE.Group {
+  const [hx, hy, hz] = half
+  const duck = new THREE.Group()
+  const skin = new THREE.MeshLambertMaterial({ color })
+  const orange = new THREE.MeshLambertMaterial({ color: 0xff8c1a })
+  const black = new THREE.MeshLambertMaterial({ color: 0x111111 })
+  const sphere = new THREE.SphereGeometry(1, 20, 14)
+  const body = new THREE.Mesh(sphere, skin)
+  body.scale.set(hx * 1.05, hy * 0.85, hz * 1.0)
+  body.position.y = -0.1 * hy
+  const r = 0.6 * hz
+  const head = new THREE.Mesh(sphere, skin)
+  head.scale.setScalar(r)
+  head.position.set(0.55 * hx, 0.75 * hy + 0.3 * r, 0)
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.35 * r, 0.8 * r, 12), orange)
+  beak.rotation.z = -Math.PI / 2
+  beak.position.set(head.position.x + 1.1 * r, head.position.y - 0.15 * r, 0)
+  const tail = new THREE.Mesh(new THREE.ConeGeometry(0.35 * hy, 0.7 * hy, 10), skin)
+  tail.rotation.z = Math.PI / 2.6
+  tail.position.set(-0.95 * hx, 0.3 * hy, 0)
+  duck.add(body, head, beak, tail)
+  for (const side of [-1, 1]) {
+    const eye = new THREE.Mesh(sphere, black)
+    eye.scale.setScalar(0.13 * r)
+    eye.position.set(head.position.x + 0.55 * r, head.position.y + 0.3 * r, side * 0.65 * r)
+    duck.add(eye)
+  }
+  duck.userData.half = half.join(',')
+  return duck
+}
+
+function disposeDuck(duck: THREE.Group) {
+  duck.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      child.geometry.dispose()
+      ;(child.material as THREE.Material).dispose()
+    }
+  })
+}
+
 // 3D counterpart of Renderer: one lit InstancedMesh of low-poly spheres, a
 // perspective camera orbiting the tank, the tank outline and a floor grid for
 // depth cues. Mutated imperatively each frame; positions have stride 3.
@@ -29,6 +75,7 @@ export class Renderer3D {
   private readonly solids: THREE.Mesh<THREE.BoxGeometry, THREE.MeshLambertMaterial>[] = []
   private readonly ground = new THREE.MeshLambertMaterial({ color: 0x3f5a3a, side: THREE.DoubleSide })
   private readonly banks: THREE.Mesh<THREE.BufferGeometry, THREE.MeshLambertMaterial>[] = []
+  private readonly ducks: THREE.Group[] = []
   private readonly resizeObserver: ResizeObserver
   private readonly container: HTMLElement
 
@@ -155,6 +202,28 @@ export class Renderer3D {
     this.body.quaternion.set(q[1], q[2], q[3], q[0])
   }
 
+  // Shows a duck per body (tank coordinates, quaternions [w, x, y, z]); duck i
+  // gets DUCK_COLORS[i]. Meshes are pooled and rebuilt only if a hull's size changes.
+  setDucks(bodies: { center: number[]; halfSize: number[]; q: number[] }[]) {
+    const parent = this.body.parent!
+    bodies.forEach((b, i) => {
+      let duck = this.ducks[i]
+      if (!duck || duck.userData.half !== b.halfSize.join(',')) {
+        if (duck) {
+          parent.remove(duck)
+          disposeDuck(duck)
+        }
+        duck = makeDuck(b.halfSize, DUCK_COLORS[i % DUCK_COLORS.length])
+        parent.add(duck)
+        this.ducks[i] = duck
+      }
+      duck.visible = true
+      duck.position.set(b.center[0], b.center[1], b.center[2])
+      duck.quaternion.set(b.q[1], b.q[2], b.q[3], b.q[0])
+    })
+    for (let i = bodies.length; i < this.ducks.length; i++) this.ducks[i].visible = false
+  }
+
   // Tank orientation as a quaternion [w, x, y, z] (tank → world).
   setTankOrientation(q: number[]) {
     this.tank.quaternion.set(q[1], q[2], q[3], q[0])
@@ -198,6 +267,7 @@ export class Renderer3D {
     this.body.material.dispose()
     for (const s of this.solids) s.geometry.dispose()
     for (const b of this.banks) b.geometry.dispose()
+    for (const d of this.ducks) disposeDuck(d)
     this.stone.dispose()
     this.ground.dispose()
     this.bounds.dispose()
