@@ -17,7 +17,7 @@ renderer, not a rewrite.
 npm install
 npm run dev            # http://localhost:5173 (start screen; the sandbox is #/2d)
 npm run build          # typecheck + static build in dist/
-npm test               # determinism, acceptance, buoyancy and 3D checks (~4 min)
+npm test               # determinism, acceptance, buoyancy, 3D checks (~5 min)
 npm run check -- 20 stiffness=8000 dt=0.003   # headless dam break with param overrides
 npm run check -- --3d 10                      # the same, with the 3D preset
 ```
@@ -68,8 +68,16 @@ particle on one CPU thread, so the default of 4000 particles in a 16×10×8 tank
 what fits 60 fps. `npm run test:3d` checks the 3D kernel constants, settling
 (bulk ρ/ρ₀ 1.006), neighbours (median 32), the domain and determinism.
 
-Not in 3D yet: floating bodies (the rigid body uses a single rotation angle),
-resizing the tank, the water surface renderer (3D screen-space
+**Floating boxes:** the panel's Floating box section drops a box at the top of the
+tank (size from the sliders, density live). It is the same rigid body as in 2D, now
+with a quaternion orientation, 3-vector angular velocity and torque, a box inertia
+tensor with Euler's equations (I ω̇ = τ − ω × Iω), and corner contacts that use the
+full tensor and rub along the actual sliding direction. In a tilting tank it also
+feels the rotating-frame forces. `npm run test:buoyancy3d`: drafts 0.45 / 1.00 /
+1.57 against Archimedes' 0.50 / 1.00 / 1.50, a 1.5 ρ₀ box sinks and lies flat, and
+made light it lifts off.
+
+Not in 3D yet: resizing the tank, the water surface renderer (3D screen-space
 fluid needs depth smoothing), and enough speed for river-sized particle counts (Web
 Workers / WebGPU, or Position Based Fluids for bigger timesteps).
 
@@ -147,8 +155,8 @@ reads ρ/ρ₀ = 0.994 with 20 neighbours.
   and torque, then integrated with gravity. Nothing models buoyancy explicitly, yet
   `npm run test:buoyancy` shows boxes at 0.25, 0.5 and 0.75 ρ₀ floating within 0.12
   of Archimedes' draft, and a 1.5 ρ₀ box sinking and resting flat. Wall contact uses
-  per-corner impulses with friction, so a box landing on a corner topples. Rotation
-  is a single angle, so it is 2D only.
+  per-corner impulses with friction, so a box landing on a corner topples. The
+  orientation is a quaternion shared with 3D; in 2D every torque points along z.
 - **Bodies rest `h` above the walls, and walls are free-slip.** Buoyancy is pressure
   on the bottom face, and particles can't represent a gap thinner than one spacing.
   So a body resting flush on the floor sealed the fluid out and acted like a suction
