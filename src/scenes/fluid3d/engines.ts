@@ -3,7 +3,7 @@ import {
   createState, integrateObstacle, makeObstacle, obstacleLattice, setObstacle, step,
   type FrameMotion, type Obstacle, type SimState,
 } from '../../sim/sph'
-import { GpuSph, requestDevice } from '../../gpu/sphGpu'
+import { GpuSph, requestDevice, type GpuScene } from '../../gpu/sphGpu'
 
 export type EngineKind = 'cpu' | 'gpu'
 
@@ -78,10 +78,16 @@ export class GpuEngine implements FluidEngine {
     this.params = params
   }
 
-  // Resolves to null when this browser has no usable WebGPU adapter.
-  static async create(params: Params): Promise<GpuEngine | null> {
+  // Resolves to null when this browser has no usable WebGPU adapter. Without a
+  // scene, the sandbox's tank.
+  static async create(params: Params, scene?: GpuScene): Promise<GpuEngine | null> {
     const device = await requestDevice()
-    return device ? new GpuEngine(new GpuSph(device, params), params) : null
+    return device ? new GpuEngine(new GpuSph(device, params, scene), params) : null
+  }
+
+  // The river current (live-adjustable), when the scene has one.
+  get current() {
+    return this.gpu.current
   }
 
   get n() {

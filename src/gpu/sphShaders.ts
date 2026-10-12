@@ -14,7 +14,8 @@ export const WORKGROUP = 64
 export const SCAN_THREADS = 256
 
 // Field order must match GpuSph.writeParams.
-export const PARAMS_VEC4S = 21
+export const MAX_BOXES = 4
+export const PARAMS_VEC4S = 24 + 2 * MAX_BOXES
 
 export const sphWgsl = /* wgsl */ `
 struct Params {
@@ -39,6 +40,10 @@ struct Params {
   bodyRot2: vec4f,
   bodyBoxMin: vec4f, // body bounding box grown by h
   bodyBoxMax: vec4f,
+  current: vec4f,    // river current: target speed along +x, relaxation rate (0 = off)
+  recycle: vec4f,    // past x = exitX, move to inletX + (x − exitX) and up by lift; enabled (0/1)
+  boxCount: vec4u,   // static solid boxes in use
+  boxes: array<vec4f, ${2 * MAX_BOXES}>, // min, max per box (static, solid)
 }
 
 struct Particle {
@@ -261,6 +266,9 @@ fn accel(@builtin(global_invocation_id) gid: vec3u) {
   let c = cellCoords(xi);
   let mass = P.fluid.x;
   var a = P.gravity.xyz + frameAccel(xi, vi);
+  // River current: relax the downstream velocity toward the target speed
+  // (stands in for the slope plus bed friction of a real river).
+  a.x += P.current.y * (P.current.x - vi.x);
   var range: vec2u;
   for (var dz = -1; dz <= 1; dz++) {
     for (var dy = -1; dy <= 1; dy++) {
@@ -365,6 +373,24 @@ fn integrate(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
+  // Static solid boxes: push out through the nearest exposed face (faces flush
+  // with the domain's walls don't count), reflecting the normal velocity.
+  for (var b = 0u; b < P.boxCount.x; b++) {
+    let bmin = P.boxes[2u * b].xyz - vec3f(r);
+    let bmax = P.boxes[2u * b + 1u].xyz + vec3f(r);
+    if (any(x <= bmin) || any(x >= bmax)) { continue; }
+    var best = 1e9;
+    var axis = 0;
+    var side = 0.0;
+    for (var k = 0; k < 3; k++) {
+      if (bmin[k] + r > P.domainMin[k] + 1e-3 && x[k] - bmin[k] < best) { best = x[k] - bmin[k]; axis = k; side = -1.0; }
+      if (bmax[k] - r < P.domainMax[k] - 1e-3 && bmax[k] - x[k] < best) { best = bmax[k] - x[k]; axis = k; side = 1.0; }
+    }
+    if (side == 0.0) { continue; }
+    x[axis] += side * 2.0 * best;
+    if (v[axis] * side < 0.0) { v[axis] = -v[axis] * e; }
+  }
+
   // Walls: clamp inset by the particle radius, reflect with restitution.
   let lo = P.domainMin.xyz + vec3f(r);
   let hi = P.domainMax.xyz - vec3f(r);
@@ -376,6 +402,13 @@ fn integrate(@builtin(global_invocation_id) gid: vec3u) {
       x[k] = hi[k];
       if (v[k] > 0.0) { v[k] = -v[k] * e; }
     }
+  }
+
+  // Recycling: water reaching the end of the channel re-enters at the inlet,
+  // lifted by the height difference (a pump, so the river never runs dry).
+  if (P.recycle.w > 0.5 && x.x > P.recycle.x) {
+    x.x = x.x - P.recycle.x + P.recycle.y;
+    x.y = min(x.y + P.recycle.z, hi.y);
   }
   particles[i] = Particle(vec4f(x, 0.0), vec4f(v, 0.0));
 }

@@ -25,10 +25,14 @@ export class Renderer3D {
   private readonly tank = new THREE.Group() // at the tank centre, rotated by its orientation
   private readonly body: THREE.Mesh<THREE.BoxGeometry, THREE.MeshLambertMaterial>
   private readonly surface: WaterSurface3D
+  private readonly stone = new THREE.MeshLambertMaterial({ color: 0x5b6470 })
+  private readonly solids: THREE.Mesh<THREE.BoxGeometry, THREE.MeshLambertMaterial>[] = []
   private readonly resizeObserver: ResizeObserver
   private readonly container: HTMLElement
 
-  constructor(container: HTMLElement, count: number, radius: number, domain: Domain) {
+  // `cameraOffset`: where the camera starts relative to the domain's centre
+  // (default: front-right and above, at a distance that frames the tank).
+  constructor(container: HTMLElement, count: number, radius: number, domain: Domain, cameraOffset?: number[]) {
     this.container = container
     this.gl = new THREE.WebGLRenderer({ antialias: true })
     this.gl.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -76,7 +80,10 @@ export class Renderer3D {
 
     // Orbit around the tank's centre; start looking at it from the front-right, above.
     const size = Math.max(x1 - x0, y1 - y0, z1 - z0)
-    this.camera.position.copy(center).add(new THREE.Vector3(0.55, 0.45, 1).normalize().multiplyScalar(size * 1.9))
+    const offset = cameraOffset
+      ? new THREE.Vector3(cameraOffset[0], cameraOffset[1], cameraOffset[2])
+      : new THREE.Vector3(0.55, 0.45, 1).normalize().multiplyScalar(size * 1.9)
+    this.camera.position.copy(center).add(offset)
     this.controls = new OrbitControls(this.camera, this.gl.domElement)
     this.controls.target.copy(center)
     this.controls.enableDamping = true
@@ -100,6 +107,14 @@ export class Renderer3D {
     }
     this.mesh.count = n
     this.mesh.instanceMatrix.needsUpdate = true
+  }
+
+  // Adds a static solid (a ledge, a rock) as a stone-coloured box, in tank coordinates.
+  addSolid(min: number[], max: number[]) {
+    const box = new THREE.Mesh(new THREE.BoxGeometry(max[0] - min[0], max[1] - min[1], max[2] - min[2]), this.stone)
+    box.position.set((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2)
+    this.body.parent!.add(box)
+    this.solids.push(box)
   }
 
   // Shows the floating body (tank coordinates, quaternion [w, x, y, z]), or hides it.
@@ -152,6 +167,8 @@ export class Renderer3D {
     this.mesh.dispose()
     this.body.geometry.dispose()
     this.body.material.dispose()
+    for (const s of this.solids) s.geometry.dispose()
+    this.stone.dispose()
     this.bounds.dispose()
     this.floor.dispose()
     this.gl.dispose()

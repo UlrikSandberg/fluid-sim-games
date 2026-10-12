@@ -338,6 +338,55 @@ function wallParticles(domain: Domain, sp: number, layers: number): Lattice {
   return { pos: latticeWhere(coords, (idx) => idx.some((k, d) => !inside[d][k])), spacing }
 }
 
+export interface SolidBox {
+  min: number[]
+  max: number[]
+}
+
+// Boundary particles for a static scene (stride dim), with their ψ: the domain's
+// walls plus solid boxes (a waterfall ledge, rocks). Each box is sampled on the
+// rest-spacing lattice within `layers` of its exposed faces; faces flush with the
+// domain's walls are left out, the walls already cover them. Each set gets its own
+// ψ (Akinci), as in buildBoundary. For engines that don't keep a SimState.
+export function staticBoundary(p: Params, boxes: SolidBox[]): { pos: Float32Array; psi: Float32Array } {
+  const dim = dimOf(p)
+  const k = makeKernels(p.h, dim)
+  const sp = p.spacing
+  const layers = Math.ceil(p.h / sp)
+  const sets: Lattice[] = [wallParticles(p.domain, sp, layers)]
+  for (const box of boxes) {
+    const coords: number[][] = []
+    const spacing: number[] = []
+    for (let d = 0; d < dim; d++) {
+      const cells = Math.max(1, Math.round((box.max[d] - box.min[d]) / sp))
+      const step = (box.max[d] - box.min[d]) / cells
+      const c: number[] = []
+      for (let i = 0; i < cells; i++) c.push(box.min[d] + (i + 0.5) * step)
+      coords.push(c)
+      spacing.push(step)
+    }
+    const thickness = layers * sp
+    const exposed = (x: number[]) => {
+      for (let d = 0; d < dim; d++) {
+        if (box.min[d] > p.domain.min[d] && x[d] - box.min[d] < thickness) return true
+        if (box.max[d] < p.domain.max[d] && box.max[d] - x[d] < thickness) return true
+      }
+      return false
+    }
+    sets.push({ pos: latticeWhere(coords, (_idx, x) => exposed(x)), spacing })
+  }
+  const total = sets.reduce((a, set) => a + set.pos.length / dim, 0)
+  const pos = new Float32Array(total * dim)
+  const psi = new Float32Array(total)
+  let offset = 0
+  for (const set of sets) {
+    pos.set(set.pos, offset * dim)
+    boundaryWeights(set.pos, set.spacing, k, p.restDensity, psi, offset)
+    offset += set.pos.length / dim
+  }
+  return { pos, psi }
+}
+
 // The obstacle's outline filled inward with `layers` rows, spacing stretched so
 // the lattice exactly spans the rectangle. Positions are body-frame offsets.
 function obstacleParticles(o: Obstacle, sp: number, layers: number): Lattice {

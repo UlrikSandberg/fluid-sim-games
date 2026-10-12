@@ -6,7 +6,8 @@ SPH solver drives two scenes, picked from a start screen:
 
 - **2D Sandbox** (`#/2d`): a side-view tank with mouse forces, a floating rigid body
   and water rendering.
-- **3D Fluid** (`#/3d`): the same solver in a 3D tank with an orbit camera.
+- **3D Sandbox** (`#/3d`): the same solver in a 3D tank, on the CPU or the GPU.
+- **River Race** (`#/race`): the game, in progress. A river with a waterfall on the GPU.
 
 A simulation's dimension is its domain's (`dimOf(params)`), so 3D was a preset plus a
 renderer, not a rewrite.
@@ -46,7 +47,7 @@ The control panel edits solver parameters live without restarting the simulation
 Particle count, spacing and seed apply on **Reset**; the button turns amber while
 those changes are pending.
 
-## 3D Fluid scene
+## 3D Sandbox scene
 
 Drag to orbit, right-drag to pan, wheel to zoom; `1`–`5` colour modes, Space pauses.
 **Rotate the tank** to slosh the water: switch the drag mode with `T` (or the panel),
@@ -110,13 +111,37 @@ XL 150k) restart the simulation.
 
 Not in 3D yet: resizing the tank.
 
+## River Race scene (in progress)
+
+A 60×14×12 channel on the GPU solver (`src/scenes/race/`). A solid ledge fills the
+first 20 units, so water runs along a 2.5-deep upper reach, pours over the ledge as a
+waterfall and continues along a 3-deep lower reach. About 16k particles, sized with
+modest GPUs in mind. Three solver features make it a river, all general enough for
+the sandbox too:
+
+- **Solid boxes** (`GpuScene.boxes`, up to 4): static boundary particles on their
+  exposed faces (`staticBoundary` in `sph.ts`) plus a push-out in the integrate pass.
+  The ledge is one; rocks will be more.
+- **Current:** each particle's downstream velocity relaxes toward a target speed
+  (panel slider, default 3), standing in for a real river's slope and bed friction.
+  A plain downhill push would accelerate forever with free-slip walls.
+- **Recycling:** water within 3 of the far end re-enters at the inlet, lifted onto
+  the ledge, so the river never drains.
+
+`D` drops a duck (a 1.6×1×1.2 box for now) at the inlet; it rides over the waterfall
+to the end in about 16 s. Next: real ducks (several, with collisions between them),
+random swirls, obstacles and gravity-flip power-ups, and race rules (start, finish,
+winner, a camera that follows the leaders). Known roughness: some splash where
+recycled water re-enters at the inlet.
+
 ## Layout
 
 ```text
 src/App.tsx    hash router: start screen at #/, each scene at its own route
 src/scenes/    registry.ts (the scene list), Home.tsx
   sandbox2d/   the 2D sandbox: Sandbox2D.tsx, ControlPanel.tsx, loop.ts
-  fluid3d/     the 3D scene: Fluid3D.tsx (with its panel), loop.ts, engines.ts (CPU/GPU)
+  fluid3d/     the 3D sandbox: Fluid3D.tsx (with its panel), loop.ts, engines.ts (CPU/GPU)
+  race/        the river race: riverScene.ts (course layout), loop.ts, RiverRace.tsx
 src/sim/       solver: plain TypeScript over typed arrays, no DOM, runs in Node
   params.ts      2D and 3D presets, dimOf, derived values (mass, CFL, brush caps)
   kernels.ts     Poly6 + Spiky; the only place with dimension-specific constants

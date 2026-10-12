@@ -2,13 +2,15 @@
 import { particleRadius, type Params } from '../sim/params'
 import { makeKernels } from '../sim/kernels'
 import { buildGrid, createGrid } from '../sim/spatialHash'
-import { createState, type FrameMotion, type Obstacle } from '../sim/sph'
+import { createState, type FrameMotion, type Obstacle, type SolidBox } from '../sim/sph'
 import { rotate } from '../sim/quat'
-import { PARAMS_VEC4S, WORKGROUP, sphWgsl } from './sphShaders'
+import { MAX_BOXES, PARAMS_VEC4S, WORKGROUP, sphWgsl } from './sphShaders'
 
-// The 3D SPH solver on the GPU (WebGPU compute). The initial state (the fluid
-// block, the wall boundary particles and their ψ) comes from the CPU code, so both
-// engines start identically; after that everything runs in compute shaders.
+// The 3D SPH solver on the GPU (WebGPU compute). It runs a GpuScene: initial
+// fluid positions and static boundary particles (built by the CPU code, so the
+// tank scene starts exactly like the CPU engine), optional solid boxes, an
+// optional river current and optional recycling from the outlet to the inlet.
+// After setup everything runs in compute shaders.
 //
 // Per frame the caller runs `substeps` steps in one submission and gets a
 // readback of positions, velocities and density/pressure/neighbours (plus the
@@ -20,6 +22,23 @@ const BODY_FORCE_SCALE = 0.5 // fixed-point scale for the force/torque atomics
 // Body boundary particles the buffer holds: an 8×8×8 box (the panel's maximum)
 // at spacing 0.5 has ~2400, and resizing would invalidate the bind group.
 const MAX_BODY_PARTICLES = 4096
+
+export interface GpuScene {
+  fluid: Float32Array // initial positions, stride 3
+  boundary: { pos: Float32Array; psi: Float32Array } // static boundary particles, stride 3
+  boxes?: SolidBox[] // static solids for the push-out (their surfaces must be in `boundary`)
+  current?: { speed: number; rate: number } // pull toward +x speed `speed` at `rate` 1/s
+  recycle?: { exitX: number; inletX: number; lift: number }
+}
+
+// The sandbox tank: createState's dam-break block and wall boundary.
+export function tankScene(p: Params): GpuScene {
+  const s = createState(p)
+  return {
+    fluid: s.pos.slice(0, s.n * 3),
+    boundary: { pos: s.pos.slice(s.n * 3, (s.n + s.nb) * 3), psi: s.weight.slice(s.n, s.n + s.nb) },
+  }
+}
 
 export interface GpuReadback {
   n: number
@@ -57,33 +76,38 @@ export class GpuSph {
   private readonly grid: { min: number[]; cellSize: number; cells: number[] }
   private bodyCount = 0
   private disposed = false
+  private readonly boxes: SolidBox[]
+  private readonly recycle: GpuScene['recycle']
+  // Live-adjustable river current (speed 0, rate 0 = none).
+  readonly current: { speed: number; rate: number }
 
-  constructor(device: GPUDevice, p: Params) {
+  constructor(device: GPUDevice, p: Params, scene: GpuScene = tankScene(p)) {
     this.device = device
     this.params = p
-    const init = createState(p)
-    const n = init.n
+    const n = scene.fluid.length / 3
     this.n = n
+    if ((scene.boxes?.length ?? 0) > MAX_BOXES) throw new Error(`at most ${MAX_BOXES} solid boxes`)
+    this.boxes = scene.boxes ?? []
+    this.recycle = scene.recycle
+    this.current = { ...(scene.current ?? { speed: 0, rate: 0 }) }
 
-    // Wall boundary particles, cell-sorted on the same grid layout the GPU uses.
-    const nb = init.nb
-    const wallPos = init.pos.subarray(n * 3, (n + nb) * 3)
+    // Static boundary particles, cell-sorted on the same grid layout the GPU uses.
+    const nb = scene.boundary.psi.length
+    const wallPos = scene.boundary.pos
     const wallGrid = createGrid(p.domain, p.h, 0, nb)
     buildGrid(wallGrid, wallPos, nb)
     const walls = new Float32Array(Math.max(nb, 1) * 4)
     for (let k = 0; k < nb; k++) {
       const b = wallGrid.sorted[k]
-      walls.set([wallPos[b * 3], wallPos[b * 3 + 1], wallPos[b * 3 + 2], init.weight[n + b]], k * 4)
+      walls.set([wallPos[b * 3], wallPos[b * 3 + 1], wallPos[b * 3 + 2], scene.boundary.psi[b]], k * 4)
     }
     this.numCells = wallGrid.numCells
     this.grid = { min: wallGrid.min, cellSize: wallGrid.cellSize, cells: Array.from(wallGrid.cellsPerAxis) }
 
+    // Particles start at rest.
     const particles = new Float32Array(n * 8)
     for (let i = 0; i < n; i++) {
-      for (let d = 0; d < 3; d++) {
-        particles[i * 8 + d] = init.pos[i * 3 + d]
-        particles[i * 8 + 4 + d] = init.vel[i * 3 + d]
-      }
+      for (let d = 0; d < 3; d++) particles[i * 8 + d] = scene.fluid[i * 3 + d]
     }
 
     const STORAGE = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC
@@ -261,6 +285,14 @@ export class GpuSph {
       set(12, [0, 0, 0, 0])
       set(15, [1, 1, 1, BODY_FORCE_SCALE])
     }
+    set(21, [this.current.speed, this.current.rate, 0, 0])
+    const rc = this.recycle
+    set(22, rc ? [rc.exitX, rc.inletX, rc.lift, 1] : [0, 0, 0, 0])
+    set(23, [this.boxes.length, 0, 0, 0], true)
+    this.boxes.forEach((box, b) => {
+      set(24 + 2 * b, [...box.min, 0])
+      set(25 + 2 * b, [...box.max, 0])
+    })
     this.device.queue.writeBuffer(this.uniform, 0, this.uniformData)
   }
 
