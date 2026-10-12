@@ -5,8 +5,10 @@ import { Renderer3D } from '../../render/renderer3d'
 import { getColorMode, writeColors, type ColorModeId, type RenderStyle } from '../../render/colorModes'
 import { GpuEngine } from '../fluid3d/engines'
 import {
-  DEFAULT_CURRENT, bankLines, courseOf, finishX, riverBoxes, riverLayout, riverParams, riverScene,
+  DEFAULT_CURRENT, START_X, bankLines, courseOf, finishX, riverBoxes, riverLayout, riverParams, riverScene,
 } from './riverScene'
+import { generateFeatures, raceSettings, randomizeCourse } from './features'
+import type { SolidBox } from '../../sim/sph'
 
 export type RacePhase = 'idle' | 'countdown' | 'racing' | 'finished'
 
@@ -55,7 +57,6 @@ const MAX_RACE = 120 // seconds; ducks still out by then are ranked by distance
 
 const STATS_INTERVAL_MS = 250
 const COUNTDOWN = 3 // seconds of simulated time before the gate opens
-const START_X = 4 // the start line's position along the course
 const LANE_GAP = 0.15 // between neighbouring ducks on the start line
 
 // Rebuilds raceParams for the current layout, keeping the live dials.
@@ -173,6 +174,48 @@ function followPoint(bodies: Obstacle[], phase: RacePhase, finishTimes: (number 
   return [x, mean[1], c.centerline(x)]
 }
 
+// Keeps a duck out of the river's solids (the ledge, rocks): treated as a sphere of
+// its largest half size, pushed out from the nearest point of any box it overlaps
+// (through the nearest face if its centre got inside), velocity into the solid
+// reflected. The GPU keeps the water out of them; this does the same for ducks.
+function solidConstraint(o: Obstacle, boxes: SolidBox[]) {
+  const r = Math.max(...o.halfSize)
+  for (const box of boxes) {
+    const closest = o.center.map((v, d) => Math.min(box.max[d], Math.max(box.min[d], v)))
+    const away = o.center.map((v, d) => v - closest[d])
+    const dist = Math.hypot(...away)
+    if (dist >= r) continue
+    let n: number[]
+    let push: number
+    if (dist > 1e-6) {
+      n = away.map((v) => v / dist)
+      push = r - dist
+    } else {
+      // Centre inside: leave through the face it's nearest to.
+      let best = Infinity
+      n = [0, 0, 0]
+      for (let d = 0; d < 3; d++) {
+        for (const side of [-1, 1]) {
+          const depth = side < 0 ? o.center[d] - box.min[d] : box.max[d] - o.center[d]
+          if (depth < best) {
+            best = depth
+            n = [0, 0, 0]
+            n[d] = side
+          }
+        }
+      }
+      push = best + r
+    }
+    for (let d = 0; d < 3; d++) o.center[d] += n[d] * push
+    const vn = o.vel[0] * n[0] + o.vel[1] * n[1] + o.vel[2] * n[2]
+    if (vn < 0) for (let d = 0; d < 3; d++) o.vel[d] -= 1.3 * vn * n[d]
+  }
+}
+
+// The layout the current course was built from (to tell the panel whether its
+// course dials have changed since).
+export const courseState = { built: '' }
+
 // The river race's loop: the GPU solver running the course from riverScene,
 // rendered with the shared 3D renderer. GPU only: a river this size isn't
 // playable on the CPU solver.
@@ -183,6 +226,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   let paused = false
   let noWebGpu = false
   let phase: RacePhase = 'idle'
+  let pendingStart = 0 // ducks to line up once a rebuilt course is ready
   let countdown = 0
   let sinceStart = 0
   let finishTimes: (number | null)[] = []
@@ -195,6 +239,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     renderer = null
     phase = 'idle'
     refreshParams()
+    courseState.built = JSON.stringify(riverLayout)
     void GpuEngine.create(raceParams, riverScene(raceParams, riverLayout)).then((created) => {
       if (mine !== generation) {
         created?.dispose()
@@ -205,7 +250,11 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         return
       }
       engine = created
-      engine.constrainBody = bankConstraint
+      const solids = riverBoxes(riverLayout)
+      engine.constrainBody = (o) => {
+        bankConstraint(o)
+        solidConstraint(o, solids)
+      }
       const { domain } = courseOf(riverLayout)
       const size = domain.max.map((v, d) => v - domain.min[d])
       renderer = new Renderer3D(container, created.n, particleRadius(raceParams), domain,
@@ -223,7 +272,25 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       renderer.addBank(left, bankTop, domain.min[2])
       renderer.addBank(right, bankTop, domain.max[2])
       accumulator = 0
+      if (pendingStart > 0) {
+        lineUp(pendingStart)
+        pendingStart = 0
+      }
     })
+  }
+
+  // Hangs `count` ducks at the gate and starts the countdown (the course is ready).
+  const lineUp = (count: number) => {
+    if (!engine) return
+    engine.removeBody()
+    const line = startLine(count)
+    for (const center of line.positions) engine.addBody({ center, size: line.size })
+    // Held at the gate (kinematic at their spot) until the countdown ends.
+    for (const o of engine.bodies) o.grabbed = true
+    renderer?.setGate(line.gate)
+    phase = 'countdown'
+    countdown = COUNTDOWN
+    finishTimes = engine.bodies.map(() => null)
   }
   start()
 
@@ -315,16 +382,13 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       paused = p
     },
     startRace(count) {
-      if (!engine) return
-      engine.removeBody()
-      const line = startLine(count)
-      for (const center of line.positions) engine.addBody({ center, size: line.size })
-      // Held at the gate (kinematic at their spot) until the countdown ends.
-      for (const o of engine.bodies) o.grabbed = true
-      renderer?.setGate(line.gate)
-      phase = 'countdown'
-      countdown = COUNTDOWN
-      finishTimes = engine.bodies.map(() => null)
+      // Every race gets fresh rocks (and, if enabled, a fresh course), so the river
+      // is rebuilt; the ducks line up once it's ready. The countdown doubles as the
+      // time the current needs to get going.
+      if (raceSettings.newCourse) randomizeCourse(riverLayout)
+      generateFeatures(riverLayout)
+      pendingStart = count
+      start()
     },
     dropDuck() {
       // Just downstream of the inlet, above the upper reach, on the centreline.

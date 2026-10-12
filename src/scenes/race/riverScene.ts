@@ -1,6 +1,7 @@
 import { defaultParams3D, particleRadius, type Params } from '../../sim/params'
 import { boundaryWeightsFor, staticBoundary, type SolidBox } from '../../sim/sph'
 import type { GpuScene } from '../../gpu/sphGpu'
+import { features } from './features'
 
 // The race course: a channel along +x that winds sideways (a sine centreline)
 // and drops over a waterfall. A solid ledge fills the upstream part, so water
@@ -37,6 +38,9 @@ export const riverLayout: RiverLayout = structuredClone(defaultRiverLayout)
 export const DEFAULT_CURRENT = { speed: 3, rate: 1.5 }
 const EXIT_MARGIN = 3 // water within this of the far end is recycled
 
+// The start line's position along the course.
+export const START_X = 4
+
 // The finish line's x: clear of the recycling zone (where water is lifted away).
 export function finishX(l: RiverLayout = riverLayout): number {
   return l.length - EXIT_MARGIN - 3
@@ -72,11 +76,12 @@ export function riverParams(l: RiverLayout = riverLayout): Params {
   }
 }
 
-// The waterfall's ledge (none when the drop is under a particle spacing).
+// The solids in the river: the waterfall's ledge (none when the drop is under a
+// particle spacing) and this race's rocks.
 export function riverBoxes(l: RiverLayout = riverLayout): SolidBox[] {
   const { domain } = courseOf(l)
-  if (l.ledgeHeight < l.spacing) return []
-  return [{ min: [0, 0, 0], max: [l.ledgeLength, l.ledgeHeight, domain.max[2]] }]
+  const ledge: SolidBox[] = l.ledgeHeight < l.spacing ? [] : [{ min: [0, 0, 0], max: [l.ledgeLength, l.ledgeHeight, domain.max[2]] }]
+  return [...ledge, ...features.rocks]
 }
 
 // Boundary particles for both banks: `layers` rows outward from each bank,

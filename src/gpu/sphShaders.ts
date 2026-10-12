@@ -14,7 +14,7 @@ export const WORKGROUP = 64
 export const SCAN_THREADS = 256
 
 // Field order must match GpuSph.writeParams.
-export const MAX_BOXES = 4
+export const MAX_BOXES = 8 // the ledge plus rocks
 export const MAX_BODIES = 8
 export const BODY_VEC4S = 10 // per Body struct
 export const PARAMS_VEC4S = 18 + 2 * MAX_BOXES + BODY_VEC4S * MAX_BODIES

@@ -4,7 +4,8 @@ import { colorModes, getColorMode, type ColorModeId, type RenderStyle } from '..
 import { Hud } from '../../ui/Hud'
 import { Legend } from '../../ui/Legend'
 import { Section, Slider } from '../../ui/controls'
-import { raceParams, raceView, startRaceLoop, type RaceController, type Standing } from './loop'
+import { courseState, raceParams, raceView, startRaceLoop, type RaceController, type Standing } from './loop'
+import { raceSettings } from './features'
 import { duckColor, duckName, racers, renderStandings, saveRacers } from './racers'
 import { defaultRiverLayout, estimateParticles, riverLayout, type RiverLayout } from './riverScene'
 
@@ -18,6 +19,7 @@ export function RiverRace() {
   const standingsRef = useRef<HTMLDivElement>(null)
   const phaseRef = useRef('idle')
   const [results, setResults] = useState<Standing[] | null>(null)
+  const [, setPhaseTick] = useState(0) // re-renders the panel when a race changes phase (e.g. a new course)
   const controllerRef = useRef<RaceController | null>(null)
   const [paused, setPaused] = useState(false)
   const [noWebGpu, setNoWebGpu] = useState(false)
@@ -45,6 +47,7 @@ export function RiverRace() {
       if (s.phase !== phaseRef.current) {
         phaseRef.current = s.phase
         setResults(s.phase === 'finished' ? s.standings : null)
+        setPhaseTick((t) => t + 1)
       }
       if (hudRef.current) {
         hudRef.current.textContent =
@@ -168,17 +171,13 @@ const DUCK_BASE = [1.6, 1, 1.2]
 // Course dials edit riverLayout and apply on Reset; water and duck dials are live.
 function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, style, onStyle }: PanelProps) {
   const [, rerender] = useReducer((x: number) => x + 1, 0)
-  const [applied, setApplied] = useState(() => JSON.stringify(riverLayout))
   const [duckScale, setDuckScale] = useState(1)
   const update = (fn: () => void) => {
     fn()
     rerender()
   }
-  const reset = () => {
-    controller()?.reset()
-    setApplied(JSON.stringify(riverLayout))
-  }
-  const resetPending = JSON.stringify(riverLayout) !== applied
+  const reset = () => update(() => controller()?.reset())
+  const resetPending = JSON.stringify(riverLayout) !== courseState.built
   const course = (label: string, key: keyof RiverLayout, min: number, max: number, step: number, digits = 1) => (
     <Slider key={key} label={label} value={riverLayout[key]} min={min} max={max} step={step}
       format={(v) => v.toFixed(digits)} onChange={(v) => update(() => (riverLayout[key] = v))} />
@@ -199,6 +198,19 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
           Start race
         </button>
       </div>
+
+      <Section title="Race (each start)">
+        <label className="row">
+          <span>New course</span>
+          <input type="checkbox" checked={raceSettings.newCourse}
+            onChange={(e) => update(() => (raceSettings.newCourse = e.target.checked))} />
+        </label>
+        <p className="note">
+          {raceSettings.newCourse ? 'a random river each race (length, bends, waterfall)' : 'races on the course below'}
+        </p>
+        <Slider label="Rocks" value={raceSettings.rocks} min={0} max={6} step={1} format={(v) => v.toFixed(0)}
+          onChange={(v) => update(() => (raceSettings.rocks = v))} />
+      </Section>
 
       <Section title="Course (on reset)">
         {course('Particle size', 'spacing', 0.3, 0.6, 0.05, 2)}
