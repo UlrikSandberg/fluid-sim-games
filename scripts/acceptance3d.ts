@@ -123,38 +123,49 @@ const pivot = p.domain.min.map((v, d) => (v + p.domain.max[d]) / 2)
 }
 
 // 6. Spin about the vertical through the tank's centre. Fit h = h₀ + c·r² to the
-// top particle per radial band, inside the tank's inscribed circle.
+// top particle per radial band, inside the tank's inscribed circle; averaged over
+// the last 5 s, since the surface still sloshes a little (src/gpu/gpuChecks.ts
+// measures the GPU the same way).
 {
   const w = 0.8
   const frame: FrameMotion = { omega: [0, w, 0], alpha: [0, 0, 0], pivot }
   const t = createState(p)
-  for (let k = 0; k < 25 / p.dt; k++) step(t, p, undefined, frame)
   const band = 0.5
   const inscribed = Math.min(p.domain.max[0] - p.domain.min[0], p.domain.max[2] - p.domain.min[2]) / 2
-  const tops = new Map<number, number>()
-  for (let i = 0; i < t.n; i++) {
-    const r = Math.hypot(t.pos[i * 3] - pivot[0], t.pos[i * 3 + 2] - pivot[2])
-    const b = Math.floor(r / band)
-    tops.set(b, Math.max(tops.get(b) ?? -Infinity, t.pos[i * 3 + 1]))
+  const curvature = () => {
+    const tops = new Map<number, number>()
+    for (let i = 0; i < t.n; i++) {
+      const r = Math.hypot(t.pos[i * 3] - pivot[0], t.pos[i * 3 + 2] - pivot[2])
+      const b = Math.floor(r / band)
+      tops.set(b, Math.max(tops.get(b) ?? -Infinity, t.pos[i * 3 + 1]))
+    }
+    let m = 0
+    let sx = 0
+    let sy = 0
+    let sxx = 0
+    let sxy = 0
+    for (const [b, h] of tops) {
+      const r = (b + 0.5) * band
+      if (r > inscribed - band) continue
+      m++
+      sx += r * r
+      sy += h
+      sxx += r ** 4
+      sxy += r * r * h
+    }
+    return (m * sxy - sx * sy) / (m * sxx - sx * sx)
   }
-  let m = 0
-  let sx = 0
-  let sy = 0
-  let sxx = 0
-  let sxy = 0
-  for (const [b, h] of tops) {
-    const r = (b + 0.5) * band
-    if (r > inscribed - band) continue
-    m++
-    sx += r * r
-    sy += h
-    sxx += r ** 4
-    sxy += r * r * h
+  for (let k = 0; k < 25 / p.dt; k++) step(t, p, undefined, frame)
+  const samples: number[] = []
+  for (let n = 0; n < 10; n++) {
+    samples.push(curvature())
+    for (let k = 0; k < 0.5 / p.dt; k++) step(t, p, undefined, frame)
   }
-  const c = (m * sxy - sx * sy) / (m * sxx - sx * sx)
+  const c = samples.reduce((a, b) => a + b, 0) / samples.length
+  const spread = Math.max(...samples) - Math.min(...samples)
   const expected = (w * w) / (2 * g)
   check('spinning tank: Newton\'s paraboloid', Math.abs(c / expected - 1) <= 0.15,
-    `curvature ${c.toFixed(4)} vs ω²/2g = ${expected.toFixed(4)} (±15%)`)
+    `mean curvature ${c.toFixed(4)} (samples spread ${spread.toFixed(4)}) vs ω²/2g = ${expected.toFixed(4)} (±15%)`)
 }
 
 // 7. Swoosh: the target tumbles about a skewed axis at 3 rad/s (above MAX_SPIN),

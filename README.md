@@ -62,7 +62,8 @@ capped at 2 rad/s and spin-up at 8 rad/s² (`src/sim/tankMotion.ts`), so even a 
 swoosh moves the walls through the water at about Mach 0.2 at most. `npm run test:3d`
 checks it against two exact answers: a tank tilted 20° settles with a world-level
 surface (spread 0.16), and one spinning at 0.8 rad/s forms Newton's paraboloid
-(curvature 0.0329 vs ω²/2g = 0.0327). Ten seconds of swooshing stays bounded and
+(curvature 0.0346 averaged over 5 s, vs ω²/2g = 0.0327; the ~6% excess is the
+measurement: particle centres sit just under the surface, which still wobbles). Ten seconds of swooshing stays bounded and
 resettles.
 The preset (`defaultParams3D`) uses spacing 0.5·h, which gives ~32 neighbours in 3D,
 the usual 30–40 target (2D's 0.4·h would give ~64). A 3D step costs ~0.9 µs per
@@ -102,7 +103,8 @@ WebGPU's guaranteed 8 per shader stage.
 It is not bit-reproducible (atomics order the grid), which the game doesn't need, so
 `npm run test:gpu` checks it statistically against the CPU solver's results: bulk
 ρ/ρ₀ 1.006 (CPU 1.006), median 32 neighbours (32), a tilted tank level to 0.12 (0.16),
-Newton's paraboloid 0.0348 vs 0.0327 (CPU 0.0329), and a 0.5 ρ₀ box floating at draft
+Newton's paraboloid 0.035 vs 0.0327 (CPU 0.0346, both averaged over 5 s; a single
+snapshot flaked past the ±15% bar on the GPU, whose runs differ), and a 0.5 ρ₀ box floating at draft
 0.92 vs 1.00. Throughput on an Apple-silicon laptop: 0.15 ms per substep at 4,000
 particles, 0.34 ms at 40,000, 1.45 ms at 200,000 (the CPU needs ~180 ms for that).
 The full app (solver, readback and rendering) holds 60 fps at 200,000 particles.

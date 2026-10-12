@@ -59,6 +59,35 @@ function bulkStats(r: GpuReadback, p: Params) {
   return { mean: sum / m, within: within / m, median }
 }
 
+// Curvature c of h = h₀ + c·r² fitted to the top particle per radial band about
+// the tank's vertical axis, inside the tank's inscribed circle.
+function paraboloidCurvature(r: GpuReadback, p: Params): number {
+  const pivot = pivotOf(p)
+  const band = 0.5
+  const inscribed = Math.min(p.domain.max[0] - p.domain.min[0], p.domain.max[2] - p.domain.min[2]) / 2
+  const tops = new Map<number, number>()
+  for (let i = 0; i < r.n; i++) {
+    const rad = Math.hypot(r.pos[i * 4] - pivot[0], r.pos[i * 4 + 2] - pivot[2])
+    const b = Math.floor(rad / band)
+    tops.set(b, Math.max(tops.get(b) ?? -Infinity, r.pos[i * 4 + 1]))
+  }
+  let m = 0
+  let sx = 0
+  let sy = 0
+  let sxx = 0
+  let sxy = 0
+  for (const [b, h] of tops) {
+    const rad = (b + 0.5) * band
+    if (rad > inscribed - band) continue
+    m++
+    sx += rad * rad
+    sy += h
+    sxx += rad ** 4
+    sxy += rad * rad * h
+  }
+  return (m * sxy - sx * sy) / (m * sxx - sx * sx)
+}
+
 export async function runGpuChecks(log: (line: string) => void = console.log): Promise<CheckResult[]> {
   const results: CheckResult[] = []
   const check = (name: string, ok: boolean, detail: string) => {
@@ -118,39 +147,24 @@ export async function runGpuChecks(log: (line: string) => void = console.log): P
     sim.dispose()
   }
 
-  // 3. Spinning about the vertical: Newton's paraboloid.
+  // 3. Spinning about the vertical: Newton's paraboloid. The surface sloshes as
+  // it spins up, so the curvature is averaged over the last 5 s rather than read
+  // from one snapshot (which, run to run, lands on different slosh phases).
   {
     const w = 0.8
     const frame: FrameMotion = { omega: [0, w, 0], alpha: [0, 0, 0], pivot: pivotOf(p) }
     const sim = new GpuSph(device, p)
-    const r = await run(device, sim, p, 25, frame, down)
-    const pivot = pivotOf(p)
-    const band = 0.5
-    const inscribed = Math.min(p.domain.max[0] - p.domain.min[0], p.domain.max[2] - p.domain.min[2]) / 2
-    const tops = new Map<number, number>()
-    for (let i = 0; i < r.n; i++) {
-      const rad = Math.hypot(r.pos[i * 4] - pivot[0], r.pos[i * 4 + 2] - pivot[2])
-      const b = Math.floor(rad / band)
-      tops.set(b, Math.max(tops.get(b) ?? -Infinity, r.pos[i * 4 + 1]))
+    let r = await run(device, sim, p, 25, frame, down)
+    const samples: number[] = []
+    for (let k = 0; k < 10; k++) {
+      samples.push(paraboloidCurvature(r, p))
+      r = await run(device, sim, p, 0.5, frame, down)
     }
-    let m = 0
-    let sx = 0
-    let sy = 0
-    let sxx = 0
-    let sxy = 0
-    for (const [b, h] of tops) {
-      const rad = (b + 0.5) * band
-      if (rad > inscribed - band) continue
-      m++
-      sx += rad * rad
-      sy += h
-      sxx += rad ** 4
-      sxy += rad * rad * h
-    }
-    const c = (m * sxy - sx * sy) / (m * sxx - sx * sx)
+    const c = samples.reduce((a, b) => a + b, 0) / samples.length
+    const spread = Math.max(...samples) - Math.min(...samples)
     const expected = (w * w) / (2 * g)
     check('spinning tank: Newton\'s paraboloid', Math.abs(c / expected - 1) <= 0.15,
-      `curvature ${c.toFixed(4)} vs ω²/2g = ${expected.toFixed(4)} (±15%)`)
+      `mean curvature ${c.toFixed(4)} (samples spread ${spread.toFixed(4)}) vs ω²/2g = ${expected.toFixed(4)} (±15%)`)
     sim.dispose()
   }
 
