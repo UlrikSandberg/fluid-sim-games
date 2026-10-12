@@ -41,8 +41,9 @@ export class Renderer3D {
     this.scene.add(sun)
     const sunDirection = sun.position.clone()
 
-    // Icosphere with one subdivision: 80 triangles, round enough at this size.
-    this.mesh = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), new THREE.MeshLambertMaterial(), count)
+    // Icosphere with one subdivision (80 triangles), round enough at this size;
+    // the bare icosahedron (20) once there are tens of thousands of them.
+    this.mesh = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, count > 10000 ? 0 : 1), new THREE.MeshLambertMaterial(), count)
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     this.colors = new Float32Array(count * 3).fill(1)
     this.mesh.instanceColor = new THREE.InstancedBufferAttribute(this.colors, 3)

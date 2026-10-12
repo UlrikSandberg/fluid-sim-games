@@ -204,30 +204,43 @@ export function step(s: SimState, p: Params, mouse?: MouseInput, frame?: FrameMo
   resolveBoundaries(s, p)
 }
 
+// A new obstacle at rest (centre and full size; clamped to fit the domain).
+// Its boundary particles come from obstacleLattice; setObstacle does both for a
+// CPU simulation, the GPU engine uses them separately.
+export function makeObstacle(p: Params, rect: { center: number[]; size: number[] }): Obstacle {
+  const dim = dimOf(p)
+  const { min, max } = p.domain
+  const halfSize = rect.size.map((w, d) => Math.min(Math.max(w / 2, p.spacing), (max[d] - min[d]) / 2))
+  const center = rect.center.slice()
+  clampCenter(center, halfSize, p.domain)
+  return {
+    center,
+    halfSize,
+    q: [1, 0, 0, 0],
+    vel: new Array(dim).fill(0),
+    omega: [0, 0, 0],
+    target: center.slice(),
+    grabbed: false,
+    local: new Float32Array(0),
+    force: new Float64Array(3),
+    torque: new Float64Array(3),
+  }
+}
+
+// The obstacle's boundary particles as body-frame offsets (stride dim), with
+// their weights ψ.
+export function obstacleLattice(o: Obstacle, p: Params): { local: Float32Array; psi: Float32Array } {
+  const obs = obstacleParticles(o, p.spacing, Math.ceil(p.h / p.spacing))
+  const m = obs.pos.length / dimOf(p)
+  const psi = new Float32Array(m)
+  boundaryWeights(obs.pos, obs.spacing, makeKernels(p.h, dimOf(p)), p.restDensity, psi, 0)
+  return { local: Float32Array.from(obs.pos), psi }
+}
+
 // Places the obstacle (centre and full size; clamped to fit the domain), or
 // removes it with null. Fluid trapped inside is pushed out.
 export function setObstacle(s: SimState, p: Params, rect: { center: number[]; size: number[] } | null) {
-  const dim = s.dim
-  if (rect) {
-    const { min, max } = p.domain
-    const halfSize = rect.size.map((w, d) => Math.min(Math.max(w / 2, p.spacing), (max[d] - min[d]) / 2))
-    const center = rect.center.slice()
-    clampCenter(center, halfSize, p.domain)
-    s.obstacle = {
-      center,
-      halfSize,
-      q: [1, 0, 0, 0],
-      vel: new Array(dim).fill(0),
-      omega: [0, 0, 0],
-      target: center.slice(),
-      grabbed: false,
-      local: new Float32Array(0),
-      force: new Float64Array(3),
-      torque: new Float64Array(3),
-    }
-  } else {
-    s.obstacle = null
-  }
+  s.obstacle = rect ? makeObstacle(p, rect) : null
   buildBoundary(s, p)
   if (s.obstacle) {
     pushOutOfObstacle(s, p, s.obstacle)
@@ -482,7 +495,17 @@ function applyInverseInertia(o: Obstacle, inertia: number[], u: number[]): numbe
 // rotating-frame forces at the centre. Rotation follows Euler's equations in the
 // body frame, I ω̇ = τ − ω × Iω; mass is ρ_body · volume.
 function advanceObstacle(s: SimState, p: Params, o: Obstacle, frame?: FrameMotion) {
-  const dim = s.dim
+  integrateObstacle(o, p, frame)
+  placeBody(s, o)
+  o.force.fill(0)
+  o.torque.fill(0)
+}
+
+// One step of the obstacle's motion from o.force and o.torque (see
+// advanceObstacle). Exported for the GPU engine, which accumulates those on the
+// GPU and integrates the body here.
+export function integrateObstacle(o: Obstacle, p: Params, frame?: FrameMotion) {
+  const dim = o.center.length
   const dt = p.dt
   if (o.grabbed || !p.obstacleDynamic) {
     clampCenter(o.target, bodyExtent(o), p.domain)
@@ -517,9 +540,6 @@ function advanceObstacle(s: SimState, p: Params, o: Obstacle, frame?: FrameMotio
     collideBodyWithWalls(o, p, mass, inertia)
     for (let d = 0; d < dim; d++) o.target[d] = o.center[d]
   }
-  placeBody(s, o)
-  o.force.fill(0)
-  o.torque.fill(0)
 }
 
 const CONTACT_FRICTION = 0.5 // Coulomb μ between the body and the walls

@@ -20,6 +20,7 @@ npm run build          # typecheck + static build in dist/
 npm test               # determinism, acceptance, buoyancy, 3D checks (~5 min)
 npm run check -- 20 stiffness=8000 dt=0.003   # headless dam break with param overrides
 npm run check -- --3d 10                      # the same, with the 3D preset
+npm run test:gpu       # GPU solver checks in headless Chrome (needs `npm run dev` running)
 ```
 
 ## Controls (2D sandbox)
@@ -87,8 +88,27 @@ refracted scene through it, a Fresnel term mixes in sky reflection, and a depth 
 lets the floating box sit in the water. Known limits: faint vertical streaks can show
 inside tall breaking waves, and silhouettes stay slightly scalloped by the spheres.
 
-Not in 3D yet: resizing the tank, and enough speed for river-sized particle counts
-(Web Workers / WebGPU, or Position Based Fluids for bigger timesteps).
+**GPU engine (WebGPU, the default where available):** the same physics as compute
+shaders in `src/gpu/` (WGSL in `sphShaders.ts`). Each substep is six dispatches:
+count particles per cell (atomics), prefix-sum the counts, scatter a cell-sorted copy,
+then density, acceleration and integration, each gathering from the 3×3×3 neighbouring
+cells. Walls are a static, pre-sorted boundary grid built by the CPU code; the floating
+box's force and torque are summed with fixed-point atomics and the box is integrated
+on the CPU once per frame. Positions come back to the existing renderer through a
+double-buffered async readback. Everything fits in six storage buffers, inside
+WebGPU's guaranteed 8 per shader stage.
+
+It is not bit-reproducible (atomics order the grid), which the game doesn't need, so
+`npm run test:gpu` checks it statistically against the CPU solver's results: bulk
+ρ/ρ₀ 1.006 (CPU 1.006), median 32 neighbours (32), a tilted tank level to 0.12 (0.16),
+Newton's paraboloid 0.0348 vs 0.0327 (CPU 0.0329), and a 0.5 ρ₀ box floating at draft
+0.92 vs 1.00. Throughput on an Apple-silicon laptop: 0.15 ms per substep at 4,000
+particles, 0.34 ms at 40,000, 1.45 ms at 200,000 (the CPU needs ~180 ms for that).
+The full app (solver, readback and rendering) holds 60 fps at 200,000 particles.
+The panel's Engine toggle switches CPU/GPU, and the Tank presets (Small 4k, Large 40k,
+XL 150k) restart the simulation.
+
+Not in 3D yet: resizing the tank.
 
 ## Layout
 
@@ -96,12 +116,14 @@ Not in 3D yet: resizing the tank, and enough speed for river-sized particle coun
 src/App.tsx    hash router: start screen at #/, each scene at its own route
 src/scenes/    registry.ts (the scene list), Home.tsx
   sandbox2d/   the 2D sandbox: Sandbox2D.tsx, ControlPanel.tsx, loop.ts
-  fluid3d/     the 3D scene: Fluid3D.tsx (with its panel), loop.ts
+  fluid3d/     the 3D scene: Fluid3D.tsx (with its panel), loop.ts, engines.ts (CPU/GPU)
 src/sim/       solver: plain TypeScript over typed arrays, no DOM, runs in Node
   params.ts      2D and 3D presets, dimOf, derived values (mass, CFL, brush caps)
   kernels.ts     Poly6 + Spiky; the only place with dimension-specific constants
   spatialHash.ts counting-sort cell grids (fluid, boundary), unique-pair list
   sph.ts         state arrays, boundary particles, the obstacle body, and step()
+src/gpu/       WebGPU solver: sphShaders.ts (WGSL), sphGpu.ts (buffers, passes,
+               readback), gpuChecks.ts (in-browser checks for npm run test:gpu)
 src/render/    renderer.ts (2D, orthographic), renderer3d.ts (perspective, orbit),
                colour modes, waterSurface.ts (2D metaballs),
                waterSurface3d.ts (3D screen-space fluid)

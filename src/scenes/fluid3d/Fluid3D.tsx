@@ -5,7 +5,11 @@ import { colorModes, getColorMode, type ColorModeId, type RenderStyle } from '..
 import { Hud } from '../../ui/Hud'
 import { Legend } from '../../ui/Legend'
 import { Section, Slider } from '../../ui/controls'
-import { params3d, startLoop3D, tankGravity, view3d, type DragMode, type SimController3D } from './loop'
+import {
+  TANKS, applyTank, gpuSupport, params3d, selectEngine, startLoop3D, tankGravity, view3d,
+  type DragMode, type SimController3D, type TankSize,
+} from './loop'
+import type { EngineKind } from './engines'
 
 // The 3D fluid scene: the shared solver with a 3D domain, an orbit camera and
 // lit spheres. No mouse forces yet (the mouse drives the camera); that needs ray
@@ -25,8 +29,10 @@ export function Fluid3D() {
     const controller = startLoop3D(host, (s) => {
       if (hudRef.current) {
         hudRef.current.textContent =
-          `${s.fps.toFixed(0)} fps · ${s.particles} particles · ` +
-          (s.paused ? 'paused' : `${s.substeps.toFixed(1)} substeps/frame · ${s.stepMs.toFixed(2)} ms/substep`) +
+          `${s.engine.toUpperCase()} · ${s.fps.toFixed(0)} fps · ${s.particles} particles · ` +
+          (s.paused
+            ? 'paused'
+            : `${s.substeps.toFixed(1)} substeps/frame` + (s.engine === 'cpu' ? ` · ${s.stepMs.toFixed(2)} ms/substep` : '')) +
           `\nρ/ρ₀ avg ${s.densityAvg.toFixed(3)} · neighbours avg ${s.neighborsAvg.toFixed(1)}` +
           `\n${view3d.drag === 'tank' ? 'drag: rotate tank' : 'drag: orbit · shift-drag: rotate tank'} · right-drag: pan · wheel: zoom` +
           `\nT: toggle drag mode · L: level tank · V: water/particles`
@@ -116,6 +122,8 @@ function Panel3D({
 }: PanelProps) {
   const [, rerender] = useReducer((x: number) => x + 1, 0)
   const [appliedCount, setAppliedCount] = useState(params3d.particleCount)
+  const [engine, setEngine] = useState<EngineKind>(view3d.engine)
+  const [tank, setTank] = useState<TankSize>(view3d.tank)
   const update = (fn: () => void) => {
     fn()
     rerender()
@@ -124,6 +132,19 @@ function Panel3D({
     controller()?.reset()
     setAppliedCount(params3d.particleCount)
   }
+  const chooseEngine = (kind: EngineKind) => {
+    selectEngine(kind)
+    setEngine(kind)
+    reset()
+    // The engine starts asynchronously and may fall back to the CPU.
+    setTimeout(() => setEngine(view3d.engine), 1500)
+  }
+  const chooseTank = (size: TankSize) => {
+    applyTank(size)
+    setTank(size)
+    reset()
+  }
+  const maxParticles = engine === 'gpu' ? 200000 : 16000
   const resetPending = params3d.particleCount !== appliedCount
   const dtLimit = cflDt(params3d)
   const capacity = blockCapacity(params3d)
@@ -220,19 +241,50 @@ function Panel3D({
         </p>
       </Section>
 
-      <Section title="Initial state (on reset)">
-        <Slider label="Particles" value={params3d.particleCount} min={500} max={16000} step={500}
+      <Section title="Simulation (restarts)">
+        <div className="row">
+          <span>Engine</span>
+          <div className="toggle" role="radiogroup">
+            {(['cpu', 'gpu'] as const).map((kind) => (
+              <button key={kind} role="radio" aria-checked={engine === kind}
+                className={engine === kind ? 'on current' : undefined}
+                disabled={kind === 'gpu' && gpuSupport.available === false}
+                onClick={() => chooseEngine(kind)}>
+                {kind.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
+        {gpuSupport.available === false && <p className="note warn">WebGPU unavailable in this browser</p>}
+        <div className="row">
+          <span>Tank</span>
+          <div className="toggle" role="radiogroup">
+            {(Object.keys(TANKS) as TankSize[]).map((size) => (
+              <button key={size} role="radio" aria-checked={tank === size}
+                className={tank === size ? 'on current' : undefined} onClick={() => chooseTank(size)}>
+                {{ small: 'Small', large: 'Large', xl: 'XL' }[size]}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="note">
+          {TANKS[tank].size.join('×')}, {TANKS[tank].particles.toLocaleString()} particles by default
+        </p>
+        <Slider label="Particles" value={params3d.particleCount} min={500} max={maxParticles} step={500}
           format={(v) => v.toFixed(0)} onChange={(v) => update(() => (params3d.particleCount = v))} />
         <p className={params3d.particleCount > capacity ? 'note warn' : 'note'}>
           {params3d.particleCount > capacity
             ? `Only ${capacity} fit in the tank`
-            : '~0.9 µs per particle per substep; 60 fps fits ~4000'}
+            : engine === 'gpu'
+              ? 'applies on Reset'
+              : 'applies on Reset · ~0.9 µs per particle per substep; 60 fps fits ~4000'}
         </p>
       </Section>
 
       <button className="wide"
         onClick={() => update(() => {
           Object.assign(params3d, structuredClone(defaultParams3D))
+          applyTank(view3d.tank)
           tankGravity.value = -defaultParams3D.gravity[1]
         })}>
         Restore defaults
