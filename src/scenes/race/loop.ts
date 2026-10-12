@@ -8,7 +8,7 @@ import {
   DEFAULT_CURRENT, START_X, bankLines, courseOf, finishX, riverBoxes, riverLayout, riverParams, riverScene,
 } from './riverScene'
 import {
-  PICKUP_INFO, features, generateFeatures, raceSettings, randomizeCourse, swirlOnDuck, waterAt, type PickupKind,
+  PICKUP_INFO, features, generateFeatures, randomizeCourse, swirlOnDuck, waterAt, type PickupKind,
 } from './features'
 import type { SolidBox } from '../../sim/sph'
 
@@ -289,16 +289,19 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         solidConstraint(o, solids)
       }
       const { domain } = courseOf(riverLayout)
-      const size = domain.max.map((v, d) => v - domain.min[d])
+      // Framed for a ~50-unit stretch, not the whole course: on long rivers the
+      // whole-course view made ducks and swirls tiny, and the follow camera tracks
+      // the race anyway.
+      const view = Math.min(domain.max[0] - domain.min[0], 50)
       renderer = new Renderer3D(container, created.n, particleRadius(raceParams), domain,
-        [-0.07 * size[0], 0.45 * size[0], 0.85 * size[0]])
+        [-0.07 * view, 0.45 * view, 0.85 * view])
       // Drawn a hair inside the domain's sides so they don't z-fight the banks' outer faces.
       for (const box of riverBoxes(riverLayout)) {
         renderer.addSolid([box.min[0], box.min[1], box.min[2] + 0.02], [box.max[0], box.max[1], box.max[2] - 0.02])
       }
       renderer.setFinish(finishLine())
-      // Half a unit over the resting level: the flowing water stands a little higher.
-      renderer.setSwirls(features.swirls.map((w) => ({ ...w, y: waterAt(riverLayout, w.x) + 0.5 })))
+      // Over the resting level: the flowing water stands a little higher.
+      renderer.setSwirls(features.swirls.map((w) => ({ ...w, y: waterAt(riverLayout, w.x) + 0.7 })))
       const [left, right] = bankLines(riverLayout)
       // Banks follow the water: just above the upper reach, stepping down at the
       // waterfall to just above the lower reach (the physical banks go to the top).
@@ -353,7 +356,8 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         for (let d = 0; d < 3; d++) o.vel[d] += BOOST_SPEED * along[d]
         o.vel[1] += 1.5
       } else {
-        zeroGUntil = sinceStart + ZERO_G_SECONDS
+        // Another Zero-G while one is on extends it.
+        zeroGUntil = Math.max(zeroGUntil, sinceStart) + ZERO_G_SECONDS
       }
     }
   }
@@ -463,7 +467,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       // Every race gets fresh rocks (and, if enabled, a fresh course), so the river
       // is rebuilt; the ducks line up once it's ready. The countdown doubles as the
       // time the current needs to get going.
-      if (raceSettings.newCourse) randomizeCourse(riverLayout)
+      randomizeCourse(riverLayout) // only the dials marked random
       generateFeatures(riverLayout)
       pendingStart = count
       start()

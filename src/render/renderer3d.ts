@@ -59,8 +59,8 @@ function spiralTexture(): THREE.CanvasTexture {
       if (t === 0) g.moveTo(r * Math.cos(angle), r * Math.sin(angle))
       else g.lineTo(r * Math.cos(angle), r * Math.sin(angle))
     }
-    g.strokeStyle = 'rgba(255, 255, 255, 0.85)'
-    g.lineWidth = 7
+    g.strokeStyle = 'rgba(255, 255, 255, 1)'
+    g.lineWidth = 16
     g.stroke()
   }
   const fade = g.createRadialGradient(0, 0, size * 0.3, 0, 0, size / 2)
@@ -351,7 +351,8 @@ export class Renderer3D {
     this.swirlTexture ??= spiralTexture()
     for (const w of swirls) {
       const material = new THREE.MeshBasicMaterial({
-        map: this.swirlTexture, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide,
+        map: this.swirlTexture, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+        color: 0xbdf3ff, blending: THREE.AdditiveBlending, // glows on the water, readable at a glancing angle
       })
       const mesh = new THREE.Mesh(new THREE.CircleGeometry(w.radius, 48), material)
       mesh.rotation.x = -Math.PI / 2

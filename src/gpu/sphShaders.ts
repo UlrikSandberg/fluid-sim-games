@@ -16,7 +16,7 @@ export const SCAN_THREADS = 256
 // Field order must match GpuSph.writeParams.
 export const MAX_BOXES = 8 // the ledge plus rocks
 export const MAX_BODIES = 8
-export const MAX_SWIRLS = 4
+export const MAX_SWIRLS = 8
 export const BODY_VEC4S = 10 // per Body struct
 // Slots: 18 fixed vec4s, swirl count, swirls, boxes, bodies (see GpuSph.writeParams).
 export const SWIRL_SLOT = 18

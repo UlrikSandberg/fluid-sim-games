@@ -5,7 +5,7 @@ import { Hud } from '../../ui/Hud'
 import { Legend } from '../../ui/Legend'
 import { Section, Slider } from '../../ui/controls'
 import { courseState, raceParams, raceView, startRaceLoop, type RaceController, type Standing } from './loop'
-import { raceSettings } from './features'
+import { countFor, raceSettings, type RandomDial } from './features'
 import { duckColor, duckName, racers, renderEvents, renderStandings, saveRacers } from './racers'
 import { defaultRiverLayout, estimateParticles, riverLayout, type RiverLayout } from './riverScene'
 
@@ -188,6 +188,21 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
     <Slider key={key} label={label} value={riverLayout[key]} min={min} max={max} step={step}
       format={(v) => v.toFixed(digits)} onChange={(v) => update(() => (riverLayout[key] = v))} />
   )
+  // A course dial with a 🎲 toggle: when on, the race draws it at random.
+  const randomizable = (label: string, key: RandomDial, min: number, max: number, step: number, digits = 1) => (
+    <div key={key} className="dial">
+      {course(label, key, min, max, step, digits)}
+      <button className={raceSettings.random[key] ? 'dice on' : 'dice'} aria-pressed={raceSettings.random[key]}
+        title={raceSettings.random[key] ? 'random each race' : 'fixed at this value'}
+        onClick={() => update(() => (raceSettings.random[key] = !raceSettings.random[key]))}>
+        🎲
+      </button>
+    </div>
+  )
+  const perFifty = (label: string, key: 'rocks' | 'swirls' | 'pickups') => (
+    <Slider key={key} label={label} value={raceSettings[key]} min={0} max={5} step={0.5}
+      format={(v) => `${v.toFixed(1)} → ${countFor(v, riverLayout, key)}`} onChange={(v) => update(() => (raceSettings[key] = v))} />
+  )
   const dtLimit = cflDt(raceParams)
 
   return (
@@ -206,31 +221,22 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
       </div>
 
       <Section title="Race (each start)">
-        <label className="row">
-          <span>New course</span>
-          <input type="checkbox" checked={raceSettings.newCourse}
-            onChange={(e) => update(() => (raceSettings.newCourse = e.target.checked))} />
-        </label>
-        <p className="note">
-          {raceSettings.newCourse ? 'a random river each race (length, bends, waterfall)' : 'races on the course below'}
-        </p>
-        <Slider label="Rocks" value={raceSettings.rocks} min={0} max={6} step={1} format={(v) => v.toFixed(0)}
-          onChange={(v) => update(() => (raceSettings.rocks = v))} />
-        <Slider label="Swirls" value={raceSettings.swirls} min={0} max={4} step={1} format={(v) => v.toFixed(0)}
-          onChange={(v) => update(() => (raceSettings.swirls = v))} />
-        <Slider label="Power-ups" value={raceSettings.pickups} min={0} max={6} step={1} format={(v) => v.toFixed(0)}
-          onChange={(v) => update(() => (raceSettings.pickups = v))} />
-        <p className="note">⬆ Flip · ⚡ Boost · 🌌 Zero-G (at most one)</p>
+        <p className="note">per 50 units of river, so longer courses get more</p>
+        {perFifty('Rocks', 'rocks')}
+        {perFifty('Swirls', 'swirls')}
+        {perFifty('Power-ups', 'pickups')}
+        <p className="note">⬆ Flip · ⚡ Boost · 🌌 Zero-G</p>
       </Section>
 
       <Section title="Course (on reset)">
         {course('Particle size', 'spacing', 0.3, 0.6, 0.05, 2)}
         <p className="note">≈{estimateParticles(riverLayout).toLocaleString()} particles · finer means more substeps too</p>
-        {course('Length', 'length', 30, 120, 5, 0)}
-        {course('Width', 'width', 6, 16, 1, 0)}
-        {course('Bends', 'bends', 0, 3, 0.5)}
-        {course('Bend size', 'bendSize', 0, 8, 0.5)}
-        {course('Waterfall', 'ledgeHeight', 0, 10, 0.5)}
+        <p className="note">🎲 = drawn at random each race; off = your value</p>
+        {randomizable('Length', 'length', 30, 120, 5, 0)}
+        {randomizable('Width', 'width', 8, 20, 1, 0)}
+        {randomizable('Bends', 'bends', 0, 3, 0.5)}
+        {randomizable('Bend size', 'bendSize', 0, 8, 0.5)}
+        {randomizable('Waterfall', 'ledgeHeight', 0, 10, 0.5)}
         {course('Upper depth', 'upperDepth', 1, 5, 0.5)}
         {course('Lower depth', 'lowerDepth', 1, 6, 0.5)}
         <button className="wide" onClick={() => update(() => Object.assign(riverLayout, structuredClone(defaultRiverLayout)))}>

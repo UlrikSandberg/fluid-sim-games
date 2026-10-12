@@ -439,3 +439,22 @@ body,
   background: rgb(0 0 0 / 0.55);
   border-radius: 4px;
 }
+
+.panel .dial {
+  display: grid;
+  grid-template-columns: 1fr 26px;
+  align-items: end;
+  gap: 4px;
+}
+
+.panel button.dice {
+  height: 22px;
+  padding: 0;
+  font-size: 12px;
+  opacity: 0.35;
+}
+
+.panel button.dice.on {
+  opacity: 1;
+  border-color: #d29922;
+}

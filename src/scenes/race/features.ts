@@ -1,4 +1,5 @@
 import type { SolidBox } from '../../sim/sph'
+import { MAX_BOXES, MAX_SWIRLS } from '../../gpu/sphShaders'
 import { courseOf, finishX, START_X, type RiverLayout } from './riverScene'
 
 // Per-race randomness: the course's shape and what's in the river. Generated when
@@ -19,12 +20,25 @@ export interface Pickup {
   taken: boolean
 }
 
-// The panel's race dials.
+// Course dials that can be drawn at random each race (the panel's 🎲 toggles).
+export type RandomDial = 'length' | 'width' | 'bends' | 'bendSize' | 'ledgeHeight'
+
+// The panel's race dials. Rocks, swirls and power-ups are per 50 units of river,
+// so a longer course gets more of them at the same density.
 export const raceSettings = {
-  newCourse: true, // draw a fresh course for each race
-  rocks: 3,
-  swirls: 2,
-  pickups: 3,
+  random: { length: true, width: false, bends: true, bendSize: true, ledgeHeight: true } as Record<RandomDial, boolean>,
+  rocks: 2,
+  swirls: 1.5,
+  pickups: 2.5,
+}
+
+// How many of something a course gets, at `perFifty` per 50 units of its length,
+// up to what the GPU holds (rocks share the solid-box slots with the ledge).
+export function countFor(perFifty: number, l: RiverLayout, kind?: 'rocks' | 'swirls' | 'pickups'): number {
+  const n = Math.round((perFifty * l.length) / 50)
+  if (kind === 'rocks') return Math.min(n, MAX_BOXES - 1)
+  if (kind === 'swirls') return Math.min(n, MAX_SWIRLS)
+  return n
 }
 
 // What the current race has (filled by generateFeatures).
@@ -45,13 +59,16 @@ export function waterAt(l: RiverLayout, x: number) {
   return x < l.ledgeLength ? l.ledgeHeight + l.upperDepth : l.lowerDepth
 }
 
-// A fresh course shape within ranges that race well; width, depths and particle
-// size (the quality dial) stay as set.
+// Draws the course dials marked random (within ranges that race well); the rest
+// keep their panel values. Depths and particle size (the quality dial) never change.
 export function randomizeCourse(l: RiverLayout) {
-  l.length = pick([50, 55, 60, 65, 70, 75, 80])
-  l.bends = pick([0.5, 1, 1.5, 2, 2.5])
-  l.bendSize = Math.round(rand(2, 6) * 2) / 2
-  l.ledgeHeight = Math.round(rand(3, 8) * 2) / 2
+  const r = raceSettings.random
+  if (r.length) l.length = pick([60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110])
+  if (r.width) l.width = pick([12, 13, 14, 15, 16, 17, 18])
+  if (r.bends) l.bends = pick([0.5, 1, 1.5, 2, 2.5])
+  if (r.bendSize) l.bendSize = Math.round(rand(2, 6) * 2) / 2
+  if (r.ledgeHeight) l.ledgeHeight = Math.round(rand(3, 8) * 2) / 2
+  // Where the waterfall is: a third of the way down, give or take.
   l.ledgeLength = Math.round(rand(0.25, 0.4) * l.length)
 }
 
@@ -70,7 +87,8 @@ function freeX(l: RiverLayout, margin: number): number | null {
 export function generateFeatures(l: RiverLayout) {
   const c = courseOf(l)
   features.rocks = []
-  for (let tries = 0; tries < 200 && features.rocks.length < raceSettings.rocks; tries++) {
+  const rocks = countFor(raceSettings.rocks, l, 'rocks')
+  for (let tries = 0; tries < 300 && features.rocks.length < rocks; tries++) {
     const x = freeX(l, 4)
     if (x == null) break
     const sx = rand(1.2, 2.4)
@@ -83,10 +101,11 @@ export function generateFeatures(l: RiverLayout) {
     features.rocks.push({ min: [x - sx / 2, bedAt(l, x), z - sz / 2], max: [x + sx / 2, waterAt(l, x) + 1.2, z + sz / 2] })
   }
   features.swirls = []
-  for (let tries = 0; tries < 200 && features.swirls.length < raceSettings.swirls; tries++) {
+  const swirls = countFor(raceSettings.swirls, l, 'swirls')
+  for (let tries = 0; tries < 300 && features.swirls.length < swirls; tries++) {
     const x = freeX(l, 6)
     if (x == null) break
-    const radius = Math.min(rand(2.5, 4), c.halfWidth - 0.5)
+    const radius = Math.min(rand(4, 6), c.halfWidth - 0.5)
     const z = c.centerline(x) + rand(-1, 1) * Math.max(0, c.halfWidth - radius)
     const clear =
       features.rocks.every((r) => Math.hypot((r.min[0] + r.max[0]) / 2 - x, (r.min[2] + r.max[2]) / 2 - z) > radius + 1.5) &&
@@ -95,8 +114,8 @@ export function generateFeatures(l: RiverLayout) {
     features.swirls.push({ x, z, radius, strength: (Math.random() < 0.5 ? -1 : 1) * rand(4, 7) })
   }
   features.pickups = []
-  let zeroG = 0
-  for (let tries = 0; tries < 200 && features.pickups.length < raceSettings.pickups; tries++) {
+  const pickups = countFor(raceSettings.pickups, l)
+  for (let tries = 0; tries < 300 && features.pickups.length < pickups; tries++) {
     const x = freeX(l, 5)
     if (x == null) break
     const z = c.centerline(x) + rand(-1, 1) * (c.halfWidth - 1.5)
@@ -104,10 +123,7 @@ export function generateFeatures(l: RiverLayout) {
       features.rocks.every((r) => Math.hypot((r.min[0] + r.max[0]) / 2 - x, (r.min[2] + r.max[2]) / 2 - z) > 3) &&
       features.pickups.every((q) => Math.hypot(q.pos[0] - x, q.pos[2] - z) > 4)
     if (!clear) continue
-    // At most one Zero-G per race: it changes everything for everyone.
-    const kinds: PickupKind[] = zeroG > 0 ? ['flip', 'boost'] : ['flip', 'boost', 'zeroG']
-    const kind = pick(kinds)
-    if (kind === 'zeroG') zeroG++
+    const kind = pick<PickupKind>(['flip', 'boost', 'zeroG'])
     features.pickups.push({ kind, pos: [x, waterAt(l, x) + 0.9, z], taken: false })
   }
 }

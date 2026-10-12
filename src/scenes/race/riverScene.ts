@@ -24,7 +24,7 @@ export interface RiverLayout {
 export const defaultRiverLayout: Readonly<RiverLayout> = {
   spacing: 0.5,
   length: 60,
-  width: 12, // fits 8 default ducks side by side on the start line
+  width: 16, // room for 8 ducks on the start line and for swirls to show
   bends: 1,
   bendSize: 4,
   ledgeLength: 20,

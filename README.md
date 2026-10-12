@@ -121,13 +121,14 @@ ledge as a waterfall and winds on along the lower reach. The default course has 
 12.6k particles, sized with modest GPUs in mind.
 
 **Dials** (the River panel):
-- **Course** (applies on Reset, which turns amber while changes are pending):
+- **Course** (applies on Reset, which turns amber while changes are pending; 🎲
+  toggles mark the dials drawn at random each race):
   particle size (the main particle-count dial: 0.5 gives ~12.6k, 0.35 ~32k; h, dt
   and the grid scale with it), length, width, bends, bend size, waterfall height, and
   upper and lower depth. The panel estimates the particle count before you apply.
 - **Water** (live): current speed and pull, gravity, stiffness, XSPH ε, and dt with
   its CFL limit.
-- **Race** (each start): new course, rocks, swirls, power-ups.
+- **Race** (each start): rocks, swirls and power-ups per 50 units of river.
 - **Racers:** how many (1–8), their names, who does the chore, follow camera.
 - **Ducks:** Start race (`S`), Add one (`D`), Clear, density (live), size (next start).
 
@@ -174,17 +175,23 @@ then glides after the leading pack, then rests on the finish.
 
 **Randomness** (`features.ts`, the panel's Race section; all drawn when a race
 starts, see `docs/race-todo.md`):
-- **New course each race** (toggle): length, bends, bend size, waterfall height.
-- **Rocks** (0–6): solid boxes in the river, clear of the start, the waterfall lip and
+- **Course:** each of length (60–110), width (12–18), bends, bend size and
+  waterfall height has a 🎲 toggle in the Course section: on, it's drawn at random
+  each race; off, the race uses your slider value (e.g. always 100 long, random
+  everything else). Default course width is 16.
+- **Rocks, swirls and power-ups** are set per 50 units of river (the panel shows the
+  resulting count), so longer courses get more of each at the same density.
+- **Rocks:** solid boxes in the river, clear of the start, the waterfall lip and
   the finish, always leaving a passage. Water flows around them; ducks bounce off
   (`solidConstraint`).
-- **Swirls** (0–4): whirlpools that turn the water's horizontal velocity toward a
-  rotation about a point (fastest mid-radius) with a gentle inward pull, shown as
-  spinning spiral discs. Ducks also feel them directly, so a caught duck circles.
-- **Power-ups** (0–6): floating gems; the first duck to touch one sets it off.
+- **Swirls** (up to 8, radius 4–6): whirlpools that turn the water's horizontal
+  velocity toward a rotation about a point (fastest mid-radius) with a gentle inward
+  pull, shown as glowing spiral discs. Ducks also feel them directly, so a caught duck circles.
+- **Power-ups:** floating gems; the first duck to touch one sets it off.
   ⬆ Flip reverses that duck's gravity (×−0.6) for 1.5 s, so it hops out and over;
-  ⚡ Boost kicks it downstream; 🌌 Zero-G (at most one per race) switches gravity off
-  for 2 s for all the water and every duck, then everything splashes down. An event
+  ⚡ Boost kicks it downstream; 🌌 Zero-G switches gravity off for 2 s for all the
+  water and every duck, then everything splashes down (another one while it's on
+  adds 2 s). An event
   feed says who grabbed what.
 - **Lanes** are dealt at random each race: with a fixed order, two races in a row
   finished in identical order, because the course favours some lanes.
