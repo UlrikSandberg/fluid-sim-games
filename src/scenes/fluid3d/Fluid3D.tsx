@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from 'react'
 import { cflDt, defaultParams3D } from '../../sim/params'
 import { blockCapacity } from '../../sim/sph'
-import { colorModes, getColorMode, type ColorModeId } from '../../render/colorModes'
+import { colorModes, getColorMode, type ColorModeId, type RenderStyle } from '../../render/colorModes'
 import { Hud } from '../../ui/Hud'
 import { Legend } from '../../ui/Legend'
 import { Section, Slider } from '../../ui/controls'
@@ -17,6 +17,7 @@ export function Fluid3D() {
   const [colorMode, setColorMode] = useState<ColorModeId>(view3d.colorMode)
   const [paused, setPaused] = useState(false)
   const [dragMode, setDragMode] = useState<DragMode>(view3d.drag)
+  const [renderStyle, setRenderStyle] = useState<RenderStyle>(view3d.style)
 
   useEffect(() => {
     const host = canvasHostRef.current
@@ -28,7 +29,7 @@ export function Fluid3D() {
           (s.paused ? 'paused' : `${s.substeps.toFixed(1)} substeps/frame · ${s.stepMs.toFixed(2)} ms/substep`) +
           `\nρ/ρ₀ avg ${s.densityAvg.toFixed(3)} · neighbours avg ${s.neighborsAvg.toFixed(1)}` +
           `\n${view3d.drag === 'tank' ? 'drag: rotate tank' : 'drag: orbit · shift-drag: rotate tank'} · right-drag: pan · wheel: zoom` +
-          `\nT: toggle drag mode · L: level tank`
+          `\nT: toggle drag mode · L: level tank · V: water/particles`
       }
     })
     controllerRef.current = controller
@@ -42,6 +43,10 @@ export function Fluid3D() {
     view3d.colorMode = id
     setColorMode(id)
   }
+  const changeRenderStyle = (style: RenderStyle) => {
+    view3d.style = style
+    setRenderStyle(style)
+  }
   const changeDragMode = (mode: DragMode) => {
     view3d.drag = mode
     setDragMode(mode)
@@ -51,14 +56,15 @@ export function Fluid3D() {
     setPaused(!paused)
   }
 
-  // Number keys pick the colour mode, T toggles the drag mode, L levels the tank,
-  // Space pauses (all ignored while a control has focus).
+  // Number keys pick the colour mode, V toggles spheres/water, T toggles the drag
+  // mode, L levels the tank, Space pauses (all ignored while a control has focus).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
       if (target.closest('input, select, textarea, button') || e.metaKey || e.ctrlKey || e.altKey) return
       const mode = colorModes[Number(e.key) - 1]
       if (mode) changeColorMode(mode.id)
+      else if (e.code === 'KeyV') changeRenderStyle(renderStyle === 'water' ? 'particles' : 'water')
       else if (e.code === 'KeyT') changeDragMode(dragMode === 'tank' ? 'orbit' : 'tank')
       else if (e.code === 'KeyL') controllerRef.current?.levelTank()
       else if (e.code === 'Space') {
@@ -84,6 +90,8 @@ export function Fluid3D() {
           onTogglePause={togglePause}
           dragMode={dragMode}
           onDragMode={changeDragMode}
+          renderStyle={renderStyle}
+          onRenderStyle={changeRenderStyle}
         />
       </div>
     </div>
@@ -98,10 +106,14 @@ interface PanelProps {
   onTogglePause: () => void
   dragMode: DragMode
   onDragMode: (mode: DragMode) => void
+  renderStyle: RenderStyle
+  onRenderStyle: (style: RenderStyle) => void
 }
 
 // Writes straight into params3d; the loop picks changes up on its next step.
-function Panel3D({ controller, colorMode, onColorMode, paused, onTogglePause, dragMode, onDragMode }: PanelProps) {
+function Panel3D({
+  controller, colorMode, onColorMode, paused, onTogglePause, dragMode, onDragMode, renderStyle, onRenderStyle,
+}: PanelProps) {
   const [, rerender] = useReducer((x: number) => x + 1, 0)
   const [appliedCount, setAppliedCount] = useState(params3d.particleCount)
   const update = (fn: () => void) => {
@@ -170,6 +182,17 @@ function Panel3D({ controller, colorMode, onColorMode, paused, onTogglePause, dr
       </Section>
 
       <Section title="View">
+        <div className="row">
+          <span>Draw</span>
+          <div className="toggle" role="radiogroup" title="V toggles">
+            {(['particles', 'water'] as const).map((style) => (
+              <button key={style} role="radio" aria-checked={renderStyle === style}
+                className={renderStyle === style ? 'on attract' : undefined} onClick={() => onRenderStyle(style)}>
+                {style === 'water' ? 'Water' : 'Particles'}
+              </button>
+            ))}
+          </div>
+        </div>
         <label className="row">
           <span>Colour</span>
           <select value={colorMode} onChange={(e) => onColorMode(e.target.value as ColorModeId)}>

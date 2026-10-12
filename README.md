@@ -77,9 +77,18 @@ feels the rotating-frame forces. `npm run test:buoyancy3d`: drafts 0.45 / 1.00 /
 1.57 against Archimedes' 0.50 / 1.00 / 1.50, a 1.5 ρ₀ box sinks and lies flat, and
 made light it lifts off.
 
-Not in 3D yet: resizing the tank, the water surface renderer (3D screen-space
-fluid needs depth smoothing), and enough speed for river-sized particle counts (Web
-Workers / WebGPU, or Position Based Fluids for bigger timesteps).
+**Water rendering** (`V` toggles it against the diagnostic spheres; on by default):
+screen-space fluid rendering in `src/render/waterSurface3d.ts`. Particles render as
+sphere impostors into a depth target and a thickness target; a narrow-range filter
+(Truong & Yuksel 2018) smooths the depth into one surface without the axis streaks of
+a separable bilateral blur; a final pass rebuilds normals and shades. Thick water takes
+the colour mode's colour (`5`: blue, foaming white with speed), thin water shows the
+refracted scene through it, a Fresnel term mixes in sky reflection, and a depth test
+lets the floating box sit in the water. Known limits: faint vertical streaks can show
+inside tall breaking waves, and silhouettes stay slightly scalloped by the spheres.
+
+Not in 3D yet: resizing the tank, and enough speed for river-sized particle counts
+(Web Workers / WebGPU, or Position Based Fluids for bigger timesteps).
 
 ## Layout
 
@@ -94,7 +103,8 @@ src/sim/       solver: plain TypeScript over typed arrays, no DOM, runs in Node
   spatialHash.ts counting-sort cell grids (fluid, boundary), unique-pair list
   sph.ts         state arrays, boundary particles, the obstacle body, and step()
 src/render/    renderer.ts (2D, orthographic), renderer3d.ts (perspective, orbit),
-               colour modes, waterSurface.ts (metaball field + threshold pass)
+               colour modes, waterSurface.ts (2D metaballs),
+               waterSurface3d.ts (3D screen-space fluid)
 src/ui/        shared React pieces: HUD, legend, panel controls
 scripts/       determinism.ts, acceptance.ts, buoyancy.ts, acceptance3d.ts,
                check-sim.ts (tuning)

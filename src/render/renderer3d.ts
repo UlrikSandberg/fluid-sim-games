@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { Domain } from '../sim/params'
+import { WaterSurface3D } from './waterSurface3d'
 
 const BACKGROUND = 0x0d1117
 
@@ -23,6 +24,7 @@ export class Renderer3D {
   private readonly floor: THREE.GridHelper
   private readonly tank = new THREE.Group() // at the tank centre, rotated by its orientation
   private readonly body: THREE.Mesh<THREE.BoxGeometry, THREE.MeshLambertMaterial>
+  private readonly surface: WaterSurface3D
   private readonly resizeObserver: ResizeObserver
   private readonly container: HTMLElement
 
@@ -37,6 +39,7 @@ export class Renderer3D {
     const sun = new THREE.DirectionalLight(0xffffff, 1.8)
     sun.position.set(0.6, 1, 0.8)
     this.scene.add(sun)
+    const sunDirection = sun.position.clone()
 
     // Icosphere with one subdivision: 80 triangles, round enough at this size.
     this.mesh = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), new THREE.MeshLambertMaterial(), count)
@@ -61,6 +64,7 @@ export class Renderer3D {
     this.tank.position.copy(center)
     this.tank.add(inner)
     this.scene.add(this.tank)
+    this.surface = new WaterSurface3D(this.mesh, radius, sunDirection)
 
     // The floor sits below the tank's reach in any orientation.
     const halfDiagonal = Math.hypot(x1 - x0, y1 - y0, z1 - z0) / 2
@@ -122,15 +126,18 @@ export class Renderer3D {
     this.mesh.instanceColor!.needsUpdate = true
   }
 
-  render() {
+  // `water`: draw the fluid as a shaded surface (see waterSurface3d.ts) instead of spheres.
+  render(water: boolean) {
     this.controls.update() // applies damping
-    this.gl.render(this.scene, this.camera)
+    if (water) this.surface.render(this.gl, this.scene, this.camera, this.mesh)
+    else this.gl.render(this.scene, this.camera)
   }
 
   private resize() {
     const { clientWidth: w, clientHeight: h } = this.container
     if (w === 0 || h === 0) return
     this.gl.setSize(w, h)
+    this.surface.resize(this.gl)
     this.camera.aspect = w / h
     this.camera.updateProjectionMatrix()
   }
@@ -138,6 +145,7 @@ export class Renderer3D {
   dispose() {
     this.resizeObserver.disconnect()
     this.controls.dispose()
+    this.surface.dispose()
     this.mesh.geometry.dispose()
     this.mesh.material.dispose()
     this.mesh.dispose()

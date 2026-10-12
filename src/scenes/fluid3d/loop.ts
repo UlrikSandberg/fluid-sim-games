@@ -2,7 +2,7 @@ import { defaultParams3D, particleRadius, type Params } from '../../sim/params'
 import { createState, setObstacle, step, type SimState } from '../../sim/sph'
 import { advanceTank, createTankMotion, levelTarget, nudgeTarget } from '../../sim/tankMotion'
 import { Renderer3D } from '../../render/renderer3d'
-import { getColorMode, writeColors, type ColorModeId } from '../../render/colorModes'
+import { getColorMode, writeColors, type ColorModeId, type RenderStyle } from '../../render/colorModes'
 
 export interface Stats3D {
   fps: number
@@ -29,7 +29,7 @@ export type DragMode = 'orbit' | 'tank'
 // The 3D scene's own mutable params and view settings (the 2D sandbox keeps
 // separate ones), so the two scenes never fight over shared state.
 export const params3d: Params = structuredClone(defaultParams3D)
-export const view3d = { colorMode: 'speed' as ColorModeId, drag: 'orbit' as DragMode }
+export const view3d = { colorMode: 'water' as ColorModeId, style: 'water' as RenderStyle, drag: 'orbit' as DragMode }
 // Gravity's magnitude; its direction in tank coordinates follows the tank's tilt,
 // so params3d.gravity is rewritten every frame.
 export const tankGravity = { value: -defaultParams3D.gravity[1] }
@@ -91,7 +91,7 @@ export function startLoop3D(container: HTMLElement, onStats: (s: Stats3D) => voi
     renderer.updatePositions(state.pos, state.n)
     writeColors(getColorMode(view3d.colorMode), state, params3d, renderer.colors)
     renderer.commitColors()
-    renderer.render()
+    renderer.render(view3d.style === 'water')
 
     frames++
     substepTotal += substeps
