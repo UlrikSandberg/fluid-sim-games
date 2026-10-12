@@ -24,3 +24,8 @@ randomness that makes every race different.
   finished in the same order, because each duck always started in the same lane.
 - [x] **5. Event feed.** "Alex grabbed Zero-G!" messages on screen, so you can see why
   the race just changed.
+- [x] **6. Set up, then start.** A new course is built with the ducks hanging at the
+  gate while the water settles; Start counts down and opens it.
+- [x] **7. Swirls come and go,** so a duck can't stay stuck in one.
+- [x] **8. Composable course.** Straights, bends, U-turns, waterfalls (several) and
+  flip zones (gravity reversed under a lid), in any order, or rolled at random.

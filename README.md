@@ -115,43 +115,67 @@ Not in 3D yet: resizing the tank.
 
 ## River Race scene (in progress)
 
-A winding channel with a waterfall, on the GPU solver (`src/scenes/race/`). A solid
-ledge fills the upstream part, so water runs along the upper reach, pours over the
-ledge as a waterfall and winds on along the lower reach. The default course has about
-12.6k particles, sized with modest GPUs in mind.
+A river built from pieces, on the GPU solver (`src/scenes/race/`). The default
+course (a bend, a waterfall, a U-turn, a flip zone, a second waterfall) has about
+39k particles at particle size 0.5 and runs at 60 fps on an M5 Pro; raise the
+particle size for weaker GPUs.
+
+**Before the start:** a new course is built with the ducks already hanging side by
+side at the gate, while the water settles and runs under them. Look around, change
+the racers, roll another course (`N`), then press **Start race** (`S`): a 3, 2, 1
+countdown (on simulated time, so pausing holds it), then the gate opens. After the
+results, **Race again here** (`S`) lines up on the same course; **New course** (`N`)
+rolls another.
+
+**Pieces** (`course.ts`): a fixed start straight, then the panel's pieces in order,
+then a fixed finish straight:
+- **Straight** (length).
+- **Bend** (turn −180°…180°, radius); a 180° bend is a **U-turn**. The tightest radius
+  is the half width + 3, so the two legs' banks stay clear of each other's water.
+- **Waterfall** (drop): a step down in the bed, with a sheer lip.
+- **Flip zone** (length): gravity is reversed (×−0.6) for water and ducks under a
+  violet glass lid 3.5 above the water, so the river lifts off its bed and runs along
+  the lid, then pours back down where the zone ends.
+
+The panel lists the pieces with a dial each, ↑ ↓ to reorder, ✕ to remove and buttons to
+add more; it warns (and won't build) when the river runs into itself. Editing a
+piece turns the random pieces 🎲 off, so you can roll a course, keep it and tweak it.
 
 **Dials** (the River panel):
-- **Course** (applies on Reset, which turns amber while changes are pending; 🎲
-  toggles mark the dials drawn at random each race):
-  particle size (the main particle-count dial: 0.5 gives ~12.6k, 0.35 ~32k; h, dt
-  and the grid scale with it), length, width, bends, bend size, waterfall height, and
-  upper and lower depth. The panel estimates the particle count before you apply.
+- **Course** (applies to the next course; New course turns amber while changes are
+  pending): particle size (the main particle-count dial; the panel estimates the
+  count), width 🎲, depth, and either your pieces or random pieces 🎲 made of a target
+  length 🎲 and numbers of waterfalls 🎲, U-turns 🎲, bends 🎲 and flip zones 🎲. Each
+  🎲 that's on draws its dial at random for every new course; off uses your value.
+  A random course shuffles its features with straights between them (longer after a
+  waterfall, for the splash), stretches the straights to the length, and retries
+  turn directions until the river doesn't overlap itself.
 - **Water** (live): current speed and pull, gravity, stiffness, XSPH ε, and dt with
   its CFL limit.
-- **Race** (each start): rocks, swirls and power-ups per 50 units of river.
-- **Racers:** how many (1–8), their names, who does the chore, follow camera.
-- **Ducks:** Start race (`S`), Add one (`D`), Clear, density (live), size (next start).
+- **Race** (each course): rocks, swirls and power-ups per 50 units of river.
+- **Racers:** how many (1–8; re-hangs the gate before a race), their names, who does
+  the chore, follow camera.
+- **Ducks:** Add one (`D`), Clear, density (live), size (next line-up).
 
-**Start:** Start race hangs the ducks side by side in one row across the river, under
-a wooden gate bar (perpendicular to the channel, so it works on a bend), just above
-the water and facing downstream. They're held there (kinematic) through a 3, 2, 1
-countdown (on simulated time, so pausing holds it), then the gate goes and they all
-drop at once. If they don't fit the channel at their set size they're scaled down to
-fit; the default channel is 12 wide so 8 full-size ducks fit.
-
-**What makes it a river** (solver features in `src/gpu`, usable by the sandbox too):
-- **Winding channel:** the centreline is z = z₀ + A·sin(kx). The banks are boundary
-  particles sampled every spacing along their arc length (sampling by x would leave
-  gaps in the bends), and the shader keeps each particle within the half width
-  measured perpendicular to the centreline, reflecting off the bank. Checked with
-  the default course: 0 of 12,644 particles outside the banks over 6 s.
-- **Current:** each particle's velocity along the channel direction (following the
-  bends) relaxes toward a target speed. It stands in for a real river's slope and bed
-  friction; a plain downhill push would accelerate forever with free-slip walls.
-- **Solid boxes:** the ledge is a static solid (boundary particles on its exposed
-  faces, push-out in the shader); rocks will be more of these.
-- **Recycling:** water near the far end re-enters at the inlet, lifted onto the ledge
-  and keeping its place across the channel, so the river never drains.
+**What makes it a river** (solver features in `src/gpu`):
+- **Course lookup:** the centreline is sampled every 0.25 along its length, and a
+  grid over the ground (cells of 0.5) stores each cell's nearest sample, so the
+  shader finds any particle's distance along the course (s) and across it (d) with
+  two reads and that sample's tangent line. Everything below works in (s, d), so a
+  U-turn is no harder than a straight.
+- **Banks, bed, lips, ends, lids:** boundary particles (banks along their own arc
+  length, the bed and the solid behind each lip on a lattice) plus a push-out in the
+  shader: out through the banks, up out of the bed or downstream past a lip,
+  whichever is nearer, and down from a flip zone's lid. Ducks get the same rules on
+  the CPU (`courseConstraint`).
+- **Current:** each particle's velocity along the course tangent relaxes toward a
+  target speed. It stands in for a real river's slope and bed friction; a plain
+  downhill push would accelerate forever with free-slip walls.
+- **Recycling:** water near the end re-enters at the start, lifted by the course's
+  total drop and keeping its place and velocity relative to the channel, so the river
+  never drains.
+- **Ground:** a height grid with the vertices near a bank, lip or end moved onto it,
+  so those render as sheer walls rather than a staircase.
 
 **Ducks:** up to 8 rigid bodies on the GPU (`MAX_BODIES`), each with its own range
 of boundary particles and its own force/torque atomics; the shader loops over the
@@ -173,27 +197,25 @@ placings, and who does the chore (last place or the winner, a panel setting). Th
 follow camera (`F`, on by default) looks at the start line during the countdown,
 then glides after the leading pack, then rests on the finish.
 
-**Randomness** (`features.ts`, the panel's Race section; all drawn when a race
-starts, see `docs/race-todo.md`):
-- **Course:** each of length (60–110), width (12–18), bends, bend size and
-  waterfall height has a 🎲 toggle in the Course section: on, it's drawn at random
-  each race; off, the race uses your slider value (e.g. always 100 long, random
-  everything else). Default course width is 16.
+**Randomness** (`features.ts`, the panel's Race section; drawn for each course):
 - **Rocks, swirls and power-ups** are set per 50 units of river (the panel shows the
   resulting count), so longer courses get more of each at the same density.
-- **Rocks:** solid boxes in the river, clear of the start, the waterfall lip and
-  the finish, always leaving a passage. Water flows around them; ducks bounce off
-  (`solidConstraint`).
-- **Swirls** (up to 8, radius 4–6): whirlpools that turn the water's horizontal
-  velocity toward a rotation about a point (fastest mid-radius) with a gentle inward
-  pull, shown as glowing spiral discs. Ducks also feel them directly, so a caught duck circles.
+- **Rocks:** solid boxes in the river, clear of the start, the waterfalls and the
+  flip zones and the finish, always leaving a passage. Water flows around them; ducks
+  bounce off (`solidConstraint`).
+- **Swirls** (up to 8 at a time, radius 4–6): whirlpools that turn the water's
+  horizontal velocity toward a rotation about a point (fastest mid-radius) with a
+  gentle inward pull, shown as glowing spiral discs. They come and go: each lasts
+  5–10 s, spinning up and down over 1.2 s (the disc fades and grows with it), is gone
+  for 1–4 s, then turns up somewhere else, so no duck stays stuck in one. Ducks also
+  feel them directly, so a caught duck circles.
 - **Power-ups:** floating gems; the first duck to touch one sets it off.
   ⬆ Flip reverses that duck's gravity (×−0.6) for 1.5 s, so it hops out and over;
   ⚡ Boost kicks it downstream; 🌌 Zero-G switches gravity off for 2 s for all the
   water and every duck, then everything splashes down (another one while it's on
-  adds 2 s). An event
-  feed says who grabbed what.
-- **Lanes** are dealt at random each race: with a fixed order, two races in a row
+  adds 2 s). An event feed says who grabbed what. Power-ups come back when the ducks
+  line up again.
+- **Lanes** are dealt at random each line-up: with a fixed order, two races in a row
   finished in identical order, because the course favours some lanes.
 
 Known roughness: some splash where recycled water re-enters.
@@ -205,7 +227,9 @@ src/App.tsx    hash router: start screen at #/, each scene at its own route
 src/scenes/    registry.ts (the scene list), Home.tsx
   sandbox2d/   the 2D sandbox: Sandbox2D.tsx, ControlPanel.tsx, loop.ts
   fluid3d/     the 3D sandbox: Fluid3D.tsx (with its panel), loop.ts, engines.ts (CPU/GPU)
-  race/        the river race: riverScene.ts (course layout), loop.ts, RiverRace.tsx
+  race/        the river race: course.ts (pieces → centreline, lookup, ground),
+               riverScene.ts (water and boundary), features.ts (rocks, swirls,
+               power-ups), loop.ts, RiverRace.tsx
 src/sim/       solver: plain TypeScript over typed arrays, no DOM, runs in Node
   params.ts      2D and 3D presets, dimOf, derived values (mass, CFL, brush caps)
   kernels.ts     Poly6 + Spiky; the only place with dimension-specific constants

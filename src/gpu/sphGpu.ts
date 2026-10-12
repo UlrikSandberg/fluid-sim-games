@@ -4,12 +4,15 @@ import { makeKernels } from '../sim/kernels'
 import { buildGrid, createGrid } from '../sim/spatialHash'
 import { createState, type FrameMotion, type Obstacle, type SolidBox } from '../sim/sph'
 import { rotate } from '../sim/quat'
-import { BODY_SLOT, BODY_VEC4S, BOX_SLOT, MAX_BODIES, MAX_BOXES, MAX_SWIRLS, PARAMS_VEC4S, SWIRL_SLOT, WORKGROUP, sphWgsl } from './sphShaders'
+import {
+  BODY_SLOT, BODY_VEC4S, BOX_SLOT, FALL_SLOT, MAX_BODIES, MAX_BOXES, MAX_FALLS, MAX_SWIRLS, MAX_ZONES, PARAMS_VEC4S, SWIRL_SLOT,
+  WORKGROUP, ZONE_SLOT, sphWgsl,
+} from './sphShaders'
 
 // The 3D SPH solver on the GPU (WebGPU compute). It runs a GpuScene: initial
 // fluid positions and static boundary particles (built by the CPU code, so the
-// tank scene starts exactly like the CPU engine), optional solid boxes, an
-// optional river current and optional recycling from the outlet to the inlet.
+// tank scene starts exactly like the CPU engine), optional solid boxes and an
+// optional river course (current, banks, waterfalls, flip zones, recycling).
 // After setup everything runs in compute shaders.
 //
 // Per frame the caller runs `substeps` steps in one submission and gets a
@@ -36,13 +39,43 @@ export interface GpuScene {
   fluid: Float32Array // initial positions, stride 3
   boundary: { pos: Float32Array; psi: Float32Array } // static boundary particles, stride 3
   boxes?: SolidBox[] // static solids for the push-out (their surfaces must be in `boundary`)
-  current?: { speed: number; rate: number } // pull toward +x speed `speed` at `rate` 1/s
-  recycle?: { exitX: number; inletX: number; lift: number }
-  // A winding channel along x: centreline z = centerZ + amplitude·sin(wavenumber·x),
-  // fluid kept within halfWidth of it (the banks' boundary particles go in `boundary`).
-  channel?: { amplitude: number; wavenumber: number; halfWidth: number; centerZ: number }
+  current?: { speed: number; rate: number } // pull downstream to speed `speed` at `rate` 1/s
+  // A river course (see course.ts): fluid kept within halfWidth of the centreline,
+  // above the bed and under the flip zones' lids (their boundary particles go in
+  // `boundary`); the current follows it.
+  course?: GpuCourse
+  // Past s = exitS, water re-enters at s = inletS, lifted by `lift` (needs a course).
+  recycle?: { exitS: number; inletS: number; lift: number }
   // Whirlpools (up to MAX_SWIRLS): centre (x, z), radius, peak speed (sign = direction).
-  swirls?: { x: number; z: number; radius: number; strength: number }[]
+  swirls?: GpuSwirl[]
+}
+
+export interface GpuSwirl {
+  x: number
+  z: number
+  radius: number
+  strength: number
+}
+
+export interface GpuCourse {
+  halfWidth: number
+  ds: number // sample spacing along the centreline
+  samples: Float32Array // per sample: x, z, tangent x, tangent z
+  lookup: { cell: number; nx: number; nz: number; index: Uint32Array } // nearest sample per ground cell (origin 0, 0)
+  top: number // bed height at the start
+  falls: { s: number; drop: number }[]
+  zones: { s0: number; s1: number; gravity: number; lid: number }[] // lid: height above the bed (0 = none)
+}
+
+// The course buffer's contents: samples, then the lookup as u32 bits (see sphShaders.ts).
+function packCourse(c: GpuCourse | undefined): ArrayBuffer {
+  if (!c) return new ArrayBuffer(16)
+  const n = c.samples.length / 4
+  const cells = Math.ceil(c.lookup.index.length / 4) * 4
+  const data = new ArrayBuffer((n * 4 + cells) * 4)
+  new Float32Array(data, 0, n * 4).set(c.samples)
+  new Uint32Array(data, n * 16, cells).set(c.lookup.index)
+  return data
 }
 
 // The sandbox tank: createState's dam-break block and wall boundary.
@@ -62,7 +95,7 @@ export interface GpuReadback {
   bodyForce: number[] // per body: force xyz, torque xyz, averaged per substep
 }
 
-// The solver uses six storage buffers, within the 8 per stage WebGPU guarantees,
+// The solver uses seven storage buffers, within the 8 per stage WebGPU guarantees,
 // so the default limits suffice on any adapter.
 export async function requestDevice(): Promise<GPUDevice | null> {
   const adapter = await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' })
@@ -84,6 +117,7 @@ export class GpuSph {
   private readonly cellAtomics: GPUBuffer
   private readonly boundary: GPUBuffer // walls then the bodies
   private readonly bodyForce: GPUBuffer
+  private readonly course: GPUBuffer
   private readonly nWall: number
   private readonly staging: { buffer: GPUBuffer; busy: boolean }[]
   private readonly numCells: number
@@ -92,8 +126,8 @@ export class GpuSph {
   private disposed = false
   private readonly boxes: SolidBox[]
   private readonly recycle: GpuScene['recycle']
-  private readonly channel: GpuScene['channel']
-  private readonly swirls: NonNullable<GpuScene['swirls']>
+  private readonly courseInfo: GpuCourse | undefined
+  private swirls: GpuSwirl[]
   // Live-adjustable river current (speed 0, rate 0 = none).
   readonly current: { speed: number; rate: number }
 
@@ -105,7 +139,9 @@ export class GpuSph {
     if ((scene.boxes?.length ?? 0) > MAX_BOXES) throw new Error(`at most ${MAX_BOXES} solid boxes`)
     this.boxes = scene.boxes ?? []
     this.recycle = scene.recycle
-    this.channel = scene.channel
+    this.courseInfo = scene.course
+    if ((scene.course?.falls.length ?? 0) > MAX_FALLS) throw new Error(`at most ${MAX_FALLS} waterfalls`)
+    if ((scene.course?.zones.length ?? 0) > MAX_ZONES) throw new Error(`at most ${MAX_ZONES} flip zones`)
     this.swirls = (scene.swirls ?? []).slice(0, MAX_SWIRLS)
     this.current = { ...(scene.current ?? { speed: 0, rate: 0 }) }
 
@@ -145,13 +181,15 @@ export class GpuSph {
     this.cellAtomics = make((2 * C + 1) * 4)
     this.boundary = make((nb + 2 * MAX_BODY_PARTICLES) * 16, walls)
     this.bodyForce = make(MAX_BODIES * 6 * 4)
-    this.buffers = [this.uniform, this.particles, this.fluid, indices, this.cellAtomics, this.boundary, this.bodyForce]
+    const course = packCourse(scene.course)
+    this.course = make(course.byteLength, new Uint8Array(course))
+    this.buffers = [this.uniform, this.particles, this.fluid, indices, this.cellAtomics, this.boundary, this.bodyForce, this.course]
 
     const layout = device.createBindGroupLayout({
-      entries: this.buffers.map((_, binding) => ({
+      entries: this.buffers.map((buffer, binding) => ({
         binding,
         visibility: GPUShaderStage.COMPUTE,
-        buffer: { type: binding === 0 ? 'uniform' : 'storage' },
+        buffer: { type: binding === 0 ? 'uniform' : buffer === this.course ? 'read-only-storage' : 'storage' },
       })),
     })
     this.bindGroup = device.createBindGroup({
@@ -202,6 +240,11 @@ export class GpuSph {
       }
     }
     if (total > 0) this.device.queue.writeBuffer(this.boundary, this.nWall * 16, data)
+  }
+
+  // Replaces the whirlpools (up to MAX_SWIRLS), e.g. as they come and go.
+  setSwirls(swirls: GpuSwirl[]) {
+    this.swirls = swirls.slice(0, MAX_SWIRLS)
   }
 
   // Runs `substeps` steps with the given frame motion and gravity (tank
@@ -290,11 +333,14 @@ export class GpuSph {
     set(12, [BODY_FORCE_SCALE, 0, 0, 0])
     set(13, [this.current.speed, this.current.rate, 0, 0])
     const rc = this.recycle
-    set(14, rc ? [rc.exitX, rc.inletX, rc.lift, 1] : [0, 0, 0, 0])
+    set(14, rc ? [rc.exitS, rc.inletS, rc.lift, 1] : [0, 0, 0, 0])
     set(15, [this.boxes.length, 0, 0, 0], true)
-    const ch = this.channel
-    set(16, ch ? [ch.amplitude, ch.wavenumber, ch.halfWidth, 1] : [0, 0, 0, 0])
-    set(17, ch ? [ch.centerZ, 0, 0, 0] : [0, 0, 0, 0])
+    const c = this.courseInfo
+    set(16, c ? [c.halfWidth, c.ds, c.samples.length / 4, 1] : [0, 0, 0, 0])
+    set(17, c ? [c.lookup.cell, c.top, 0, 0] : [0, 0, 0, 0])
+    set(18, c ? [c.lookup.nx, c.lookup.nz, c.falls.length, c.zones.length] : [0, 0, 0, 0], true)
+    c?.falls.forEach((f, i) => set(FALL_SLOT + i, [f.s, f.drop, 0, 0]))
+    c?.zones.forEach((z, i) => set(ZONE_SLOT + i, [z.s0, z.s1, z.gravity, z.lid]))
     set(SWIRL_SLOT, [this.swirls.length, 0, 0, 0], true)
     this.swirls.forEach((w, i) => set(SWIRL_SLOT + 1 + i, [w.x, w.z, w.radius, w.strength]))
     this.boxes.forEach((box, b) => {

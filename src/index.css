@@ -458,3 +458,67 @@ body,
   opacity: 1;
   border-color: #d29922;
 }
+
+/* Before the start: the ducks hang at the gate while the water settles. */
+.setup {
+  position: absolute;
+  bottom: 56px;
+  left: 50%;
+  display: flex;
+  gap: 8px;
+  transform: translateX(-50%);
+}
+
+.setup button {
+  padding: 8px 16px;
+  font: inherit;
+  font-size: 14px;
+  color: inherit;
+  background: rgb(22 27 34 / 0.85);
+  border: 1px solid #3a4552;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.setup button.go {
+  font-size: 18px;
+  font-weight: bold;
+  color: #0d1117;
+  background: #f2c230;
+  border-color: #f2c230;
+}
+
+/* The course's pieces. */
+.pieces {
+  margin: 4px 0;
+}
+
+.piece {
+  margin: 4px 0;
+  padding: 2px 4px;
+  border-left: 2px solid #3a4552;
+}
+
+.piece-head {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.piece-head span {
+  flex: 1;
+}
+
+.panel .piece-head button {
+  padding: 0 5px;
+  font-size: 11px;
+}
+
+.panel .buttons.add {
+  flex-wrap: wrap;
+}
+
+.panel .buttons.add button {
+  padding: 2px 5px;
+  font-size: 11px;
+}

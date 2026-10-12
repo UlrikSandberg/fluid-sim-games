@@ -1,15 +1,19 @@
 import type { SolidBox } from '../../sim/sph'
 import { MAX_BOXES, MAX_SWIRLS } from '../../gpu/sphShaders'
-import { courseOf, finishX, START_X, type RiverLayout } from './riverScene'
+import { pointAt, randomPieces, waterAt, type CourseGeometry, type PieceCounts } from './course'
+import { START_S, finishS, type RiverLayout } from './riverScene'
 
-// Per-race randomness: the course's shape and what's in the river. Generated when
-// a race starts (Math.random: races are meant to differ, not to be replayed).
+// Per-race randomness: the course's pieces and what's in the river. Math.random:
+// races are meant to differ, not to be replayed.
 
 export interface Swirl {
   x: number
   z: number
   radius: number
-  strength: number // peak tangential speed; the sign sets the direction
+  peak: number // peak tangential speed; the sign sets the direction
+  strength: number // the peak scaled by how far it has spun up (0 while gone)
+  age: number // seconds since it appeared (negative: appears in −age seconds)
+  life: number // seconds it lasts
 }
 
 export type PickupKind = 'flip' | 'boost' | 'zeroG'
@@ -20,22 +24,38 @@ export interface Pickup {
   taken: boolean
 }
 
-// Course dials that can be drawn at random each race (the panel's 🎲 toggles).
-export type RandomDial = 'length' | 'width' | 'bends' | 'bendSize' | 'ledgeHeight'
+// Course dials that can be drawn at random for each new course (the panel's 🎲
+// toggles). `pieces` off keeps the panel's piece list as it is.
+export type RandomDial = 'pieces' | 'width' | keyof PieceCounts
 
 // The panel's race dials. Rocks, swirls and power-ups are per 50 units of river,
 // so a longer course gets more of them at the same density.
 export const raceSettings = {
-  random: { length: true, width: false, bends: true, bendSize: true, ledgeHeight: true } as Record<RandomDial, boolean>,
+  random: {
+    pieces: true, width: false, length: true, waterfalls: true, uTurns: true, bends: true, flipZones: true,
+  } as Record<RandomDial, boolean>,
+  // What a random course is made of (each drawn from its range when its 🎲 is on).
+  counts: { length: 100, waterfalls: 2, uTurns: 1, bends: 2, flipZones: 1 } as PieceCounts,
   rocks: 2,
-  swirls: 1.5,
+  swirls: 1.5, // at a time
   pickups: 2.5,
 }
 
+// The ranges random dials are drawn from.
+export const RANDOM_RANGES: Record<keyof PieceCounts | 'width', number[]> = {
+  length: [70, 140],
+  width: [12, 18],
+  waterfalls: [1, 3],
+  uTurns: [0, 2],
+  bends: [0, 3],
+  flipZones: [0, 2],
+}
+
 // How many of something a course gets, at `perFifty` per 50 units of its length,
-// up to what the GPU holds (rocks share the solid-box slots with the ledge).
-export function countFor(perFifty: number, l: RiverLayout, kind?: 'rocks' | 'swirls' | 'pickups'): number {
-  const n = Math.round((perFifty * l.length) / 50)
+// up to what the GPU holds (rocks share the solid-box slots with nothing else now,
+// but keep one spare).
+export function countFor(perFifty: number, length: number, kind?: 'rocks' | 'swirls' | 'pickups'): number {
+  const n = Math.round((perFifty * length) / 50)
   if (kind === 'rocks') return Math.min(n, MAX_BOXES - 1)
   if (kind === 'swirls') return Math.min(n, MAX_SWIRLS)
   return n
@@ -49,83 +69,115 @@ export const features = {
 }
 
 const rand = (lo: number, hi: number) => lo + Math.random() * (hi - lo)
-const pick = <T>(xs: readonly T[]) => xs[Math.floor(Math.random() * xs.length)]
+const randInt = ([lo, hi]: number[]) => lo + Math.floor(Math.random() * (hi - lo + 1))
 
-// Water surface and bed heights at x (the upper reach sits on the ledge).
-export function bedAt(l: RiverLayout, x: number) {
-  return x < l.ledgeLength ? l.ledgeHeight : 0
-}
-export function waterAt(l: RiverLayout, x: number) {
-  return x < l.ledgeLength ? l.ledgeHeight + l.upperDepth : l.lowerDepth
-}
-
-// Draws the course dials marked random (within ranges that race well); the rest
-// keep their panel values. Depths and particle size (the quality dial) never change.
+// Draws the course dials marked random, then (if pieces are random) a new piece
+// list from the counts. Depth and particle size (the quality dial) never change.
 export function randomizeCourse(l: RiverLayout) {
   const r = raceSettings.random
-  if (r.length) l.length = pick([60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110])
-  if (r.width) l.width = pick([12, 13, 14, 15, 16, 17, 18])
-  if (r.bends) l.bends = pick([0.5, 1, 1.5, 2, 2.5])
-  if (r.bendSize) l.bendSize = Math.round(rand(2, 6) * 2) / 2
-  if (r.ledgeHeight) l.ledgeHeight = Math.round(rand(3, 8) * 2) / 2
-  // Where the waterfall is: a third of the way down, give or take.
-  l.ledgeLength = Math.round(rand(0.25, 0.4) * l.length)
+  const c = raceSettings.counts
+  if (r.width) l.width = randInt(RANDOM_RANGES.width)
+  if (!r.pieces) return
+  if (r.length) c.length = Math.round(randInt(RANDOM_RANGES.length) / 5) * 5
+  if (r.waterfalls) c.waterfalls = randInt(RANDOM_RANGES.waterfalls)
+  if (r.uTurns) c.uTurns = randInt(RANDOM_RANGES.uTurns)
+  if (r.bends) c.bends = randInt(RANDOM_RANGES.bends)
+  if (r.flipZones) c.flipZones = randInt(RANDOM_RANGES.flipZones)
+  l.pieces = randomPieces(c, l.width)
 }
 
 // Where things may go along the course: past the start line, before the finish,
-// and not on the waterfall's lip or its splash zone.
-function freeX(l: RiverLayout, margin: number): number | null {
+// and off the waterfalls' lips and splash zones and out of the flip zones.
+function freeS(g: CourseGeometry, margin: number): number | null {
   for (let tries = 0; tries < 50; tries++) {
-    const x = rand(START_X + 6, finishX(l) - margin)
-    if (x > l.ledgeLength - 3 && x < l.ledgeLength + 6) continue
-    return x
+    const s = rand(START_S + 8, finishS(g) - margin)
+    if (g.falls.some((f) => s > f.s - 3 - margin / 2 && s < f.s + 6)) continue
+    if (g.zones.some((z) => s > z.s0 - margin && s < z.s1 + margin)) continue
+    return s
   }
   return null
 }
 
-// Rocks, swirls and pickups for a race on layout `l`.
-export function generateFeatures(l: RiverLayout) {
-  const c = courseOf(l)
+const rockCentre = (r: SolidBox) => [(r.min[0] + r.max[0]) / 2, (r.min[2] + r.max[2]) / 2]
+
+// Rocks, a swirl schedule and pickups for a race on course `g`.
+export function generateFeatures(g: CourseGeometry) {
+  const hw = g.halfWidth
   features.rocks = []
-  const rocks = countFor(raceSettings.rocks, l, 'rocks')
+  const rocks = countFor(raceSettings.rocks, g.length, 'rocks')
   for (let tries = 0; tries < 300 && features.rocks.length < rocks; tries++) {
-    const x = freeX(l, 4)
-    if (x == null) break
+    const s = freeS(g, 4)
+    if (s == null) break
     const sx = rand(1.2, 2.4)
     const sz = rand(1.2, 2.4)
-    const maxOffset = c.halfWidth - sz / 2 - 2.2 // always leave a passage beside it
+    const maxOffset = hw - Math.hypot(sx, sz) / 2 - 2.2 // always leave a passage beside it
     if (maxOffset <= 0) continue
-    const z = c.centerline(x) + rand(-maxOffset, maxOffset)
-    const tooClose = features.rocks.some((r) => Math.hypot((r.min[0] + r.max[0]) / 2 - x, (r.min[2] + r.max[2]) / 2 - z) < 5)
+    const p = pointAt(g, s, rand(-maxOffset, maxOffset))
+    const tooClose = features.rocks.some((r) => Math.hypot(rockCentre(r)[0] - p.x, rockCentre(r)[1] - p.z) < 5)
     if (tooClose) continue
-    features.rocks.push({ min: [x - sx / 2, bedAt(l, x), z - sz / 2], max: [x + sx / 2, waterAt(l, x) + 1.2, z + sz / 2] })
+    // Down to the domain's floor, so the push-out never sends water out of the bottom.
+    features.rocks.push({ min: [p.x - sx / 2, 0, p.z - sz / 2], max: [p.x + sx / 2, waterAt(g, s) + 1.2, p.z + sz / 2] })
   }
   features.swirls = []
-  const swirls = countFor(raceSettings.swirls, l, 'swirls')
-  for (let tries = 0; tries < 300 && features.swirls.length < swirls; tries++) {
-    const x = freeX(l, 6)
-    if (x == null) break
-    const radius = Math.min(rand(4, 6), c.halfWidth - 0.5)
-    const z = c.centerline(x) + rand(-1, 1) * Math.max(0, c.halfWidth - radius)
-    const clear =
-      features.rocks.every((r) => Math.hypot((r.min[0] + r.max[0]) / 2 - x, (r.min[2] + r.max[2]) / 2 - z) > radius + 1.5) &&
-      features.swirls.every((w) => Math.hypot(w.x - x, w.z - z) > w.radius + radius)
-    if (!clear) continue
-    features.swirls.push({ x, z, radius, strength: (Math.random() < 0.5 ? -1 : 1) * rand(4, 7) })
+  const swirls = countFor(raceSettings.swirls, g.length, 'swirls')
+  for (let i = 0; i < swirls; i++) {
+    const w: Swirl = { x: 0, z: 0, radius: 0, peak: 0, strength: 0, age: 0, life: 0 }
+    respawn(g, w, rand(0, 4))
+    features.swirls.push(w)
   }
   features.pickups = []
-  const pickups = countFor(raceSettings.pickups, l)
+  const pickups = countFor(raceSettings.pickups, g.length)
   for (let tries = 0; tries < 300 && features.pickups.length < pickups; tries++) {
-    const x = freeX(l, 5)
-    if (x == null) break
-    const z = c.centerline(x) + rand(-1, 1) * (c.halfWidth - 1.5)
+    const s = freeS(g, 5)
+    if (s == null) break
+    const p = pointAt(g, s, rand(-1, 1) * (hw - 1.5))
     const clear =
-      features.rocks.every((r) => Math.hypot((r.min[0] + r.max[0]) / 2 - x, (r.min[2] + r.max[2]) / 2 - z) > 3) &&
-      features.pickups.every((q) => Math.hypot(q.pos[0] - x, q.pos[2] - z) > 4)
+      features.rocks.every((r) => Math.hypot(rockCentre(r)[0] - p.x, rockCentre(r)[1] - p.z) > 3) &&
+      features.pickups.every((q) => Math.hypot(q.pos[0] - p.x, q.pos[2] - p.z) > 4)
     if (!clear) continue
-    const kind = pick<PickupKind>(['flip', 'boost', 'zeroG'])
-    features.pickups.push({ kind, pos: [x, waterAt(l, x) + 0.9, z], taken: false })
+    const kind = (['flip', 'boost', 'zeroG'] as const)[Math.floor(Math.random() * 3)]
+    features.pickups.push({ kind, pos: [p.x, waterAt(g, s) + 0.9, p.z], taken: false })
   }
+}
+
+// Swirls come and go: each lasts a few seconds (spinning up and down), is gone
+// for a moment, then turns up somewhere else, so no duck stays stuck in one.
+const SWIRL_LIFE = [5, 10]
+const SWIRL_GAP = [1, 4]
+const SWIRL_FADE = 1.2 // seconds to spin up, and to spin down
+
+// Moves swirl `w` to a new spot, appearing in `delay` seconds.
+function respawn(g: CourseGeometry, w: Swirl, delay: number) {
+  w.age = -delay
+  w.life = rand(SWIRL_LIFE[0], SWIRL_LIFE[1])
+  w.strength = 0
+  for (let tries = 0; tries < 40; tries++) {
+    const s = freeS(g, 6)
+    if (s == null) return
+    const radius = Math.min(rand(4, 6), g.halfWidth - 0.5)
+    const p = pointAt(g, s, rand(-1, 1) * Math.max(0, g.halfWidth - radius))
+    const clear =
+      features.rocks.every((r) => Math.hypot(rockCentre(r)[0] - p.x, rockCentre(r)[1] - p.z) > radius + 1.5) &&
+      features.swirls.every((o) => o === w || o.age < 0 || Math.hypot(o.x - p.x, o.z - p.z) > o.radius + radius)
+    if (!clear) continue
+    Object.assign(w, { x: p.x, z: p.z, radius, peak: (Math.random() < 0.5 ? -1 : 1) * rand(4, 7) })
+    return
+  }
+}
+
+// Advances the swirls by `dt` seconds.
+export function updateSwirls(g: CourseGeometry, dt: number) {
+  for (const w of features.swirls) {
+    w.age += dt
+    if (w.age >= w.life) respawn(g, w, rand(SWIRL_GAP[0], SWIRL_GAP[1]))
+    w.strength = w.peak * swirlLevel(w)
+  }
+}
+
+// How spun up a swirl is: 0 (gone) to 1.
+export function swirlLevel(w: Swirl): number {
+  if (w.age <= 0) return 0
+  return Math.min(1, w.age / SWIRL_FADE, (w.life - w.age) / SWIRL_FADE)
 }
 
 export const PICKUP_INFO: Record<PickupKind, { label: string; color: number }> = {
@@ -142,6 +194,7 @@ const DUCK_SWIRL_RATE = 1.2
 // water's, see sphShaders.ts), so a duck caught in one visibly circles.
 export function swirlOnDuck(center: number[], vel: number[], dt: number) {
   for (const w of features.swirls) {
+    if (w.strength === 0) continue
     const rx = center[0] - w.x
     const rz = center[2] - w.z
     const dist = Math.hypot(rx, rz)

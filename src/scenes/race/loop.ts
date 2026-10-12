@@ -1,18 +1,21 @@
 import { particleRadius, type Params } from '../../sim/params'
 import type { FrameMotion, Obstacle, SimState } from '../../sim/sph'
-import { rotate } from '../../sim/quat'
+import { rotate, type Quat } from '../../sim/quat'
 import { Renderer3D } from '../../render/renderer3d'
 import { getColorMode, writeColors, type ColorModeId, type RenderStyle } from '../../render/colorModes'
 import { GpuEngine } from '../fluid3d/engines'
+import { DEFAULT_CURRENT, START_S, finishS, riverLayout, riverParams, riverScene } from './riverScene'
 import {
-  DEFAULT_CURRENT, START_X, bankLines, courseOf, finishX, riverBoxes, riverLayout, riverParams, riverScene,
-} from './riverScene'
-import {
-  PICKUP_INFO, features, generateFeatures, randomizeCourse, swirlOnDuck, waterAt, type PickupKind,
+  PICKUP_INFO, features, generateFeatures, randomizeCourse, swirlLevel, swirlOnDuck, updateSwirls, type PickupKind,
 } from './features'
+import {
+  FLIP_ZONE_GRAVITY, bedAt, buildCourse, lidAt, locate, pointAt, terrain, waterAt, zoneAt, zoneLid, type CourseGeometry,
+} from './course'
 import type { SolidBox } from '../../sim/sph'
 
-export type RacePhase = 'idle' | 'countdown' | 'racing' | 'finished'
+// idle: no ducks; setup: ducks hang at the gate while the water settles, until
+// Start; countdown: 3, 2, 1; racing; finished.
+export type RacePhase = 'idle' | 'setup' | 'countdown' | 'racing' | 'finished'
 
 // A duck's place in the race: finished ducks by time, the rest by distance.
 export interface Standing {
@@ -39,21 +42,26 @@ export interface RaceStats {
   standings: Standing[] // best first
   events: RaceEvent[] // power-ups from the last few seconds, newest first
   zeroG: number // seconds of Zero-G left (0 when gravity is on)
+  course: number // counts the courses built (the panel shows the new one's pieces)
   status: 'starting' | 'running' | 'paused' | 'no-webgpu'
 }
 
 export interface RaceController {
-  reset(): void // rebuild the course from riverLayout
+  newCourse(): void // draw the 🎲 dials, build the course, hang the ducks at the gate
   setPaused(paused: boolean): void
-  startRace(count: number): void // clear the ducks, hang `count` at the start line, count down, release
+  startRace(): void // setup: count down and release; finished: line up again on the same course
+  lineUp(count: number): void // (re)hang `count` ducks at the gate (setup)
   dropDuck(): void // add one duck at the inlet
   clearDucks(): void
   dispose(): void
 }
 
-// Live settings the panel edits. raceParams is rebuilt from the layout on reset
-// (spacing, h, dt, domain), keeping the live solver dials.
-export const raceParams: Params = riverParams()
+// The course being raced (rebuilt by newCourse).
+let course: CourseGeometry = buildCourse(riverLayout.pieces, riverLayout.width, riverLayout.depth)
+
+// Live settings the panel edits. raceParams is rebuilt for each course (spacing,
+// h, dt, domain), keeping the live solver dials.
+export const raceParams: Params = riverParams(course, riverLayout.spacing)
 export const raceView = {
   colorMode: 'water' as ColorModeId,
   style: 'water' as RenderStyle,
@@ -78,55 +86,72 @@ const STATS_INTERVAL_MS = 250
 const COUNTDOWN = 3 // seconds of simulated time before the gate opens
 const LANE_GAP = 0.15 // between neighbouring ducks on the start line
 
-// Rebuilds raceParams for the current layout, keeping the live dials.
+// Rebuilds raceParams for the current course, keeping the live dials.
 function refreshParams() {
-  const fresh = riverParams(riverLayout)
+  const fresh = riverParams(course, riverLayout.spacing)
   const { stiffness, viscosityEps, restitution, obstacleDensity, useTait } = raceParams
   Object.assign(raceParams, fresh, { stiffness, viscosityEps, restitution, obstacleDensity, useTait })
 }
 
-// Keeps the duck between the banks: its centre stays within the half width less
-// its horizontal reach, measured perpendicular to the winding centreline, and
-// its velocity into the bank is reflected.
-function bankConstraint(o: Obstacle) {
-  const c = courseOf(riverLayout)
-  let reach = 0
+// How far a duck reaches from its centre horizontally and vertically.
+function reaches(o: Obstacle) {
+  let side = 0
+  let up = 0
   for (let k = 0; k < 3; k++) {
     const axis = rotate(o.q, [k === 0 ? 1 : 0, k === 1 ? 1 : 0, k === 2 ? 1 : 0])
-    reach = Math.max(reach, Math.hypot(axis[0], axis[2]) * o.halfSize[k])
+    side = Math.max(side, Math.hypot(axis[0], axis[2]) * o.halfSize[k])
+    up += Math.abs(axis[1]) * o.halfSize[k]
   }
-  const s = c.slope(o.center[0])
-  const norm = Math.hypot(s, 1)
-  const across = (o.center[2] - c.centerline(o.center[0])) / norm
-  const limit = Math.max(0, c.halfWidth - reach)
-  if (Math.abs(across) <= limit) return
-  const n = [(-Math.sign(across) * s) / norm, 0, Math.sign(across) / norm] // outward
-  const excess = Math.abs(across) - limit
-  o.center[0] -= excess * n[0]
-  o.center[2] -= excess * n[2]
-  const vn = o.vel[0] * n[0] + o.vel[2] * n[2]
-  if (vn > 0) {
-    o.vel[0] -= 1.3 * vn * n[0]
-    o.vel[2] -= 1.3 * vn * n[2]
+  return { side, up }
+}
+
+// Pushes the duck back along unit vector n by `depth`, reflecting its velocity
+// against n.
+function pushBack(o: Obstacle, n: number[], depth: number) {
+  for (let d = 0; d < 3; d++) o.center[d] += depth * n[d]
+  const vn = o.vel[0] * n[0] + o.vel[1] * n[1] + o.vel[2] * n[2]
+  if (vn < 0) for (let d = 0; d < 3; d++) o.vel[d] -= 1.3 * vn * n[d]
+}
+
+// Keeps a duck in the river as the GPU keeps the water: between the banks
+// (measured across the course), inside the ends, above the bed (or past a lip,
+// if it's nearer) and under a flip zone's lid.
+function courseConstraint(g: CourseGeometry, o: Obstacle) {
+  const { side, up } = reaches(o)
+  const w = locate(g, o.center[0], o.center[2])
+  const t = [w.tx, 0, w.tz]
+  const across = [-w.tz, 0, w.tx]
+  const limit = Math.max(0, g.halfWidth - side)
+  if (Math.abs(w.d) > limit) pushBack(o, across.map((v) => -Math.sign(w.d) * v), Math.abs(w.d) - limit)
+  if (w.s < side) pushBack(o, t, side - w.s)
+  if (w.s > g.length - side) pushBack(o, t.map((v) => -v), w.s - (g.length - side))
+  const bed = bedAt(g, w.s)
+  const bottom = o.center[1] - up
+  if (bottom < bed) {
+    const lip = Math.min(...g.falls.filter((f) => f.s > w.s).map((f) => f.s))
+    const past = lip + side - w.s
+    if (past < bed - bottom && bottom >= bedAt(g, lip)) pushBack(o, t, past)
+    else pushBack(o, [0, 1, 0], bed - bottom)
+  }
+  if (zoneAt(g, w.s)) {
+    const lid = lidAt(g, w.s)
+    if (o.center[1] + up > lid) pushBack(o, [0, -1, 0], o.center[1] + up - lid)
   }
 }
 
-// The start line: `count` ducks side by side across the channel at START_X,
-// along the channel's perpendicular there, hanging just above the water and facing
-// downstream. If they don't fit the channel's width at their set size, they're
-// scaled down to fit. Also returns the gate bar's ends, above the ducks.
+// The start line: `count` ducks side by side across the channel at START_S,
+// hanging just above the water and facing downstream. If they don't fit the
+// channel's width at their set size, they're scaled down to fit. Also returns the
+// gate bar's ends, above the ducks.
 function startLine(count: number) {
-  const c = courseOf(riverLayout)
-  const s = c.slope(START_X)
-  const norm = Math.hypot(1, s)
-  const across = [-s / norm, 1 / norm] // (x, z) unit vector across the channel
-  const available = 2 * c.halfWidth - 0.6
+  const g = course
+  const at = pointAt(g, START_S)
+  const across = [-at.tz, at.tx] // (x, z) unit vector across the channel
+  const available = 2 * g.halfWidth - 0.6
   const needed = count * raceView.duckSize[2] + (count - 1) * LANE_GAP
   const scale = Math.min(1, available / needed)
   const size = raceView.duckSize.map((v) => v * scale)
-  const water = riverLayout.ledgeHeight + riverLayout.upperDepth
-  const y = water + size[1] / 2 + 0.3
-  const zc = c.centerline(START_X)
+  const y = waterAt(g, START_S) + size[1] / 2 + 0.3
   // Lanes are dealt out at random each race: a fixed order hands the same ducks
   // the same lanes every time, and the course's shape favours some lanes (two
   // races in a row finished in identical order before this).
@@ -137,43 +162,47 @@ function startLine(count: number) {
   }
   const positions = lanes.map((lane) => {
     const offset = (lane - (count - 1) / 2) * (size[2] + LANE_GAP)
-    return [START_X + offset * across[0], y, zc + offset * across[1]]
+    return [at.x + offset * across[0], y, at.z + offset * across[1]]
   })
-  const reach = c.halfWidth + 0.5
+  const reach = g.halfWidth + 0.5
   const barY = y + size[1] / 2 + 0.5
   const gate = [
-    [START_X - reach * across[0], barY, zc - reach * across[1]],
-    [START_X + reach * across[0], barY, zc + reach * across[1]],
+    [at.x - reach * across[0], barY, at.z - reach * across[1]],
+    [at.x + reach * across[0], barY, at.z + reach * across[1]],
   ]
-  return { positions, size, gate }
+  // Facing downstream: a turn about +y from +x to the tangent.
+  const yaw = Math.atan2(-at.tz, at.tx)
+  const q: Quat = [Math.cos(yaw / 2), 0, Math.sin(yaw / 2), 0]
+  return { positions, size, gate, q }
 }
 
-// The finish banner's ends: across the channel at finishX, its bottom just above
-// the lower reach's bank tops.
+// The finish banner's ends: across the channel at finishS, its bottom a little
+// above the water.
 function finishLine(): number[][] {
-  const c = courseOf(riverLayout)
-  const x = finishX(riverLayout)
-  const s = c.slope(x)
-  const norm = Math.hypot(1, s)
-  const reach = c.halfWidth + 0.5
-  const y = riverLayout.lowerDepth + 3
-  const zc = c.centerline(x)
+  const g = course
+  const s = finishS(g)
+  const reach = g.halfWidth + 0.5
+  const y = waterAt(g, s) + 2.5
+  const a = pointAt(g, s, -reach)
+  const b = pointAt(g, s, reach)
   return [
-    [x + (reach * s) / norm, y, zc - reach / norm],
-    [x - (reach * s) / norm, y, zc + reach / norm],
+    [a.x, y, a.z],
+    [b.x, y, b.z],
   ]
 }
+
+// How far down the course each duck is.
+const sOf = (o: Obstacle) => locate(course, o.center[0], o.center[2]).s
 
 // Best first: finished ducks by finish time, then the rest by how far down the
 // course they are.
 function standings(bodies: Obstacle[], finishTimes: (number | null)[]): Standing[] {
-  const start = START_X
-  const span = finishX(riverLayout) - start
+  const span = finishS(course) - START_S
   return bodies
     .map((o, index) => ({
       index,
       finishTime: finishTimes[index] ?? null,
-      progress: Math.min(1, Math.max(0, (o.center[0] - start) / span)),
+      progress: Math.min(1, Math.max(0, (sOf(o) - START_S) / span)),
     }))
     .sort((a, b) => {
       if (a.finishTime != null && b.finishTime != null) return a.finishTime - b.finishTime
@@ -183,22 +212,22 @@ function standings(bodies: Obstacle[], finishTimes: (number | null)[]): Standing
     })
 }
 
-// Where the camera looks: the start line during the countdown, then the middle of
-// the leading pack (the first three still racing), and the finish once it's over.
+// Where the camera looks: the start line before the gate opens, then a little
+// ahead of the leading pack (the first three still racing), and the finish once
+// it's over.
 function followPoint(bodies: Obstacle[], phase: RacePhase, finishTimes: (number | null)[]): number[] | null {
-  const c = courseOf(riverLayout)
-  if (phase === 'idle' || bodies.length === 0) return null
-  if (phase === 'countdown') return [START_X + 8, riverLayout.ledgeHeight, c.centerline(START_X + 8)]
-  if (phase === 'finished') {
-    const x = finishX(riverLayout)
-    return [x, riverLayout.lowerDepth, c.centerline(x)]
+  const g = course
+  const at = (s: number, y = waterAt(g, s)) => {
+    const p = pointAt(g, s)
+    return [p.x, y, p.z]
   }
-  const racing = bodies.filter((_, i) => finishTimes[i] == null).sort((a, b) => b.center[0] - a.center[0]).slice(0, 3)
+  if (phase === 'idle' || phase === 'setup' || phase === 'countdown' || bodies.length === 0) return at(START_S + 8)
+  if (phase === 'finished') return at(finishS(g))
+  const racing = bodies.filter((_, i) => finishTimes[i] == null).sort((a, b) => sOf(b) - sOf(a)).slice(0, 3)
   const pack = racing.length > 0 ? racing : bodies
-  const mean = [0, 1, 2].map((d) => pack.reduce((a, o) => a + o.center[d], 0) / pack.length)
-  // A little ahead of the pack, but not past the course's end.
-  const x = Math.min(mean[0] + 6, finishX(riverLayout))
-  return [x, mean[1], c.centerline(x)]
+  const s = pack.reduce((a, o) => a + sOf(o), 0) / pack.length
+  const y = pack.reduce((a, o) => a + o.center[1], 0) / pack.length
+  return at(Math.min(s + 6, finishS(g)), y)
 }
 
 // Keeps a duck out of the river's solids (the ledge, rocks): treated as a sphere of
@@ -240,8 +269,8 @@ function solidConstraint(o: Obstacle, boxes: SolidBox[]) {
 }
 
 // The layout the current course was built from (to tell the panel whether its
-// course dials have changed since).
-export const courseState = { built: '' }
+// course dials have changed since), and the course's length.
+export const courseState = { built: '', length: course.length, version: 0 }
 
 // The river race's loop: the GPU solver running the course from riverScene,
 // rendered with the shared 3D renderer. GPU only: a river this size isn't
@@ -253,7 +282,6 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   let paused = false
   let noWebGpu = false
   let phase: RacePhase = 'idle'
-  let pendingStart = 0 // ducks to line up once a rebuilt course is ready
   let countdown = 0
   let sinceStart = 0
   let finishTimes: (number | null)[] = []
@@ -261,18 +289,26 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   let zeroGUntil = 0
   let events: { duck: number; kind: PickupKind; at: number }[] = []
 
-  const start = () => {
+  // Builds riverLayout's course (with fresh rocks, swirls and pickups) and hangs
+  // the ducks at the gate once it's ready. A course whose pieces don't fit
+  // together is skipped (the panel says why).
+  const build = () => {
+    const g = buildCourse(riverLayout.pieces, riverLayout.width, riverLayout.depth)
+    if (g.problem) return
     const mine = ++generation
     engine?.dispose()
     renderer?.dispose()
     engine = null
     renderer = null
     phase = 'idle'
-    zeroGUntil = 0
-    events = []
-    refreshParams()
+    course = g
     courseState.built = JSON.stringify(riverLayout)
-    void GpuEngine.create(raceParams, riverScene(raceParams, riverLayout)).then((created) => {
+    courseState.length = g.length
+    courseState.version++
+    refreshParams()
+    generateFeatures(g)
+    const rocks = features.rocks
+    void GpuEngine.create(raceParams, riverScene(raceParams, g, rocks)).then((created) => {
       if (mine !== generation) {
         created?.dispose()
         return
@@ -282,59 +318,56 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         return
       }
       engine = created
-      const solids = riverBoxes(riverLayout)
       engine.constrainBody = (o) => {
         if (!o.grabbed) swirlOnDuck(o.center, o.vel, raceParams.dt)
-        bankConstraint(o)
-        solidConstraint(o, solids)
+        courseConstraint(g, o)
+        solidConstraint(o, rocks)
       }
-      const { domain } = courseOf(riverLayout)
       // Framed for a ~50-unit stretch, not the whole course: on long rivers the
       // whole-course view made ducks and swirls tiny, and the follow camera tracks
       // the race anyway.
-      const view = Math.min(domain.max[0] - domain.min[0], 50)
-      renderer = new Renderer3D(container, created.n, particleRadius(raceParams), domain,
+      const view = Math.min(Math.max(g.domain.max[0], g.domain.max[2]), 50)
+      renderer = new Renderer3D(container, created.n, particleRadius(raceParams), g.domain,
         [-0.07 * view, 0.45 * view, 0.85 * view])
-      // Drawn a hair inside the domain's sides so they don't z-fight the banks' outer faces.
-      for (const box of riverBoxes(riverLayout)) {
-        renderer.addSolid([box.min[0], box.min[1], box.min[2] + 0.02], [box.max[0], box.max[1], box.max[2] - 0.02])
+      renderer.showBounds(false)
+      renderer.addTerrain(terrain(g))
+      for (const rock of rocks) {
+        const bed = bedAt(g, locate(g, (rock.min[0] + rock.max[0]) / 2, (rock.min[2] + rock.max[2]) / 2).s)
+        renderer.addSolid([rock.min[0], bed - 0.5, rock.min[2]], rock.max)
       }
+      for (const zone of g.zones) renderer.addLid(zoneLid(g, zone))
       renderer.setFinish(finishLine())
-      // Over the resting level: the flowing water stands a little higher.
-      renderer.setSwirls(features.swirls.map((w) => ({ ...w, y: waterAt(riverLayout, w.x) + 0.7 })))
-      const [left, right] = bankLines(riverLayout)
-      // Banks follow the water: just above the upper reach, stepping down at the
-      // waterfall to just above the lower reach (the physical banks go to the top).
-      const l = riverLayout
-      const bankTop = (x: number) => (x < l.ledgeLength ? l.ledgeHeight + l.upperDepth : l.lowerDepth) + 1
-      renderer.addBank(left, bankTop, domain.min[2])
-      renderer.addBank(right, bankTop, domain.max[2])
       accumulator = 0
-      if (pendingStart > 0) {
-        lineUp(pendingStart)
-        pendingStart = 0
-      }
+      lineUp(raceView.duckCount)
+      renderer.follow(followPoint(engine.bodies, phase, finishTimes), true)
     })
   }
 
-  // Hangs `count` ducks at the gate and starts the countdown (the course is ready).
+  // Hangs `count` ducks at the gate (the setup phase: the water runs, the ducks
+  // wait for Start). Puts the power-ups back.
   const lineUp = (count: number) => {
     if (!engine) return
     engine.removeBody()
     const line = startLine(count)
     for (const center of line.positions) engine.addBody({ center, size: line.size })
     // Held at the gate (kinematic at their spot) until the countdown ends.
-    for (const o of engine.bodies) o.grabbed = true
+    for (const o of engine.bodies) {
+      o.grabbed = true
+      o.q = [...line.q]
+    }
     renderer?.setGate(line.gate)
-    phase = 'countdown'
-    countdown = COUNTDOWN
+    for (const pickup of features.pickups) pickup.taken = false
+    phase = 'setup'
+    countdown = 0
+    sinceStart = 0
+    zeroGUntil = 0
+    events = []
     finishTimes = engine.bodies.map(() => null)
     flipUntil = engine.bodies.map(() => 0)
   }
 
   // The first duck to reach an untaken pickup sets it off.
   const grabPickups = (bodies: Obstacle[]) => {
-    const c = courseOf(riverLayout)
     for (const pickup of features.pickups) {
       if (pickup.taken) continue
       const i = bodies.findIndex(
@@ -345,11 +378,9 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       pickup.taken = true
       events.push({ duck: i, kind: pickup.kind, at: sinceStart })
       const o = bodies[i]
-      const s = c.slope(o.center[0])
-      const norm = Math.hypot(1, s)
-      const along = [1 / norm, 0, s / norm] // downstream
+      const w = locate(course, o.center[0], o.center[2])
+      const along = [w.tx, 0, w.tz] // downstream
       if (pickup.kind === 'flip') {
-        o.gravityScale = FLIP_SCALE
         flipUntil[i] = sinceStart + FLIP_SECONDS
         for (let d = 0; d < 3; d++) o.vel[d] += 2 * along[d]
       } else if (pickup.kind === 'boost') {
@@ -361,7 +392,18 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       }
     }
   }
-  start()
+
+  // Each duck's gravity: reversed while it's flipped and inside a flip zone (both
+  // at once cancel out to normal, more or less).
+  const duckGravity = (bodies: Obstacle[]) => {
+    bodies.forEach((o, i) => {
+      const flipped = flipUntil[i] > 0 && sinceStart < flipUntil[i]
+      const inZone = zoneAt(course, sOf(o)) != null
+      o.gravityScale = (flipped ? FLIP_SCALE : 1) * (inZone ? FLIP_ZONE_GRAVITY : 1)
+    })
+  }
+
+  build()
 
   let accumulator = 0
   let last = performance.now()
@@ -381,15 +423,18 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       substeps = Math.min(Math.floor(accumulator / raceParams.dt), raceParams.maxSubsteps)
       accumulator -= substeps * raceParams.dt
       if (substeps === raceParams.maxSubsteps) accumulator = Math.min(accumulator, raceParams.dt)
+      const simulated = substeps * raceParams.dt
       engine.current.speed = raceView.current.speed
       engine.current.rate = raceView.current.rate
+      updateSwirls(course, simulated)
+      engine.setSwirls(features.swirls.filter((w) => w.strength !== 0))
+      duckGravity(engine.bodies)
       const pivot = raceParams.domain.min.map((v, d) => (v + raceParams.domain.max[d]) / 2)
       const still: FrameMotion = { omega: [0, 0, 0], alpha: [0, 0, 0], pivot }
       // Zero-G switches gravity off for everything, water and ducks alike.
       const zeroG = phase === 'racing' && sinceStart < zeroGUntil
       engine.step(substeps, still, [0, zeroG ? 0 : -raceView.gravity, 0])
       // The countdown runs on simulated time, so pausing holds it.
-      const simulated = substeps * raceParams.dt
       if (phase === 'countdown') {
         countdown -= simulated
         if (countdown <= 0) {
@@ -403,13 +448,10 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         }
       } else if (phase === 'racing') {
         sinceStart += simulated
-        const line = finishX(riverLayout)
+        const line = finishS(course)
         engine.bodies.forEach((o, i) => {
-          if (finishTimes[i] == null && o.center[0] >= line) finishTimes[i] = sinceStart
-          if (flipUntil[i] && sinceStart >= flipUntil[i]) {
-            o.gravityScale = 1
-            flipUntil[i] = 0
-          }
+          if (finishTimes[i] == null && sOf(o) >= line) finishTimes[i] = sinceStart
+          if (flipUntil[i] && sinceStart >= flipUntil[i]) flipUntil[i] = 0
         })
         grabPickups(engine.bodies)
         if (finishTimes.every((t) => t != null) || sinceStart >= MAX_RACE) phase = 'finished'
@@ -419,6 +461,11 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     if (engine && renderer) {
       renderer.setDucks(engine.bodies)
       renderer.setPickups(features.pickups.map((q) => ({ pos: q.pos, color: PICKUP_INFO[q.kind].color, taken: q.taken })))
+      // Over the resting level: the flowing water stands a little higher.
+      renderer.setSwirls(features.swirls.map((w) => ({
+        x: w.x, z: w.z, radius: w.radius, strength: w.strength, level: swirlLevel(w),
+        y: waterAt(course, locate(course, w.x, w.z).s) + 0.7,
+      })))
       renderer.follow(raceView.follow ? followPoint(engine.bodies, phase, finishTimes) : null)
       view = engine.view()
       if (view) {
@@ -446,6 +493,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
           .map((e) => ({ duck: e.duck, kind: e.kind, age: sinceStart - e.at }))
           .reverse(),
         zeroG: phase === 'racing' ? Math.max(0, zeroGUntil - sinceStart) : 0,
+        course: courseState.version,
         status: noWebGpu ? 'no-webgpu' : !engine ? 'starting' : paused ? 'paused' : 'running',
       })
       frames = 0
@@ -457,27 +505,31 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   raf = requestAnimationFrame(frame)
 
   return {
-    reset() {
-      start()
+    newCourse() {
+      randomizeCourse(riverLayout) // only the dials marked random
+      build()
     },
     setPaused(p) {
       paused = p
     },
-    startRace(count) {
-      // Every race gets fresh rocks (and, if enabled, a fresh course), so the river
-      // is rebuilt; the ducks line up once it's ready. The countdown doubles as the
-      // time the current needs to get going.
-      randomizeCourse(riverLayout) // only the dials marked random
-      generateFeatures(riverLayout)
-      pendingStart = count
-      start()
+    startRace() {
+      if (phase === 'setup') {
+        phase = 'countdown'
+        countdown = COUNTDOWN
+      } else if (phase !== 'countdown' && phase !== 'racing') {
+        lineUp(raceView.duckCount)
+      }
+    },
+    lineUp(count) {
+      if (phase === 'setup' || phase === 'idle' || phase === 'finished') lineUp(count)
     },
     dropDuck() {
-      // Just downstream of the inlet, above the upper reach, on the centreline.
-      const x = 3
-      const y = riverLayout.ledgeHeight + riverLayout.upperDepth + raceView.duckSize[1] + 1
-      if (engine?.addBody({ center: [x, y, courseOf(riverLayout).centerline(x)], size: raceView.duckSize })) {
+      // Just downstream of the inlet, above the water, on the centreline.
+      const p = pointAt(course, 3)
+      const y = waterAt(course, 3) + raceView.duckSize[1] + 1
+      if (engine?.addBody({ center: [p.x, y, p.z], size: raceView.duckSize })) {
         finishTimes.push(null) // a late entrant still races
+        flipUntil.push(0)
       }
     },
     clearDucks() {
@@ -485,6 +537,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       renderer?.setGate(null)
       phase = 'idle'
       finishTimes = []
+      flipUntil = []
     },
     dispose() {
       generation++

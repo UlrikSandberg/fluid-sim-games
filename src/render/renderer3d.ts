@@ -105,8 +105,12 @@ export class Renderer3D {
   private readonly surface: WaterSurface3D
   private readonly stone = new THREE.MeshLambertMaterial({ color: 0x5b6470 })
   private readonly solids: THREE.Mesh<THREE.BoxGeometry, THREE.MeshLambertMaterial>[] = []
-  private readonly ground = new THREE.MeshLambertMaterial({ color: 0x3f5a3a, side: THREE.DoubleSide })
-  private readonly banks: THREE.Mesh<THREE.BufferGeometry, THREE.MeshLambertMaterial>[] = []
+  private readonly ground = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide })
+  private readonly glass = new THREE.MeshBasicMaterial({
+    color: 0xb07cff, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false,
+  })
+  private readonly rim = new THREE.LineBasicMaterial({ color: 0xd6b8ff })
+  private readonly banks: (THREE.Mesh | THREE.Line)[] = [] // ground, lids
   private readonly ducks: THREE.Group[] = []
   private readonly swirlDiscs: { mesh: THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>; strength: number }[] = []
   private swirlTexture: THREE.CanvasTexture | null = null
@@ -226,31 +230,50 @@ export class Renderer3D {
     this.solids.push(box)
   }
 
-  // Adds a river bank as a solid block of land: a wall along `line` ((x, z)
-  // points) from the floor up to height(x), ground on top out to z = `outerZ`, and
-  // the block's outer side and ends closed, so there's no hollow to look into.
-  addBank(line: number[][], height: (x: number) => number, outerZ: number) {
-    const positions: number[] = []
-    const quad = (a: number[], b: number[], c: number[], d: number[]) => positions.push(...a, ...b, ...c, ...a, ...c, ...d)
-    for (let i = 0; i + 1 < line.length; i++) {
-      const [x0, z0] = line[i]
-      const [x1, z1] = line[i + 1]
-      const h0 = height(x0)
-      const h1 = height(x1)
-      quad([x0, 0, z0], [x1, 0, z1], [x1, h1, z1], [x0, h0, z0]) // bank wall
-      quad([x0, h0, z0], [x1, h1, z1], [x1, h1, outerZ], [x0, h0, outerZ]) // ground
-      quad([x0, 0, outerZ], [x1, 0, outerZ], [x1, h1, outerZ], [x0, h0, outerZ]) // outer side
+  // Adds the ground: an nx × nz grid of vertices (row by row along x; positions
+  // stride 3) with a linear RGB colour per vertex.
+  addTerrain(t: { nx: number; nz: number; positions: Float32Array; colors: Float32Array }) {
+    const index: number[] = []
+    for (let j = 0; j + 1 < t.nz; j++) {
+      for (let i = 0; i + 1 < t.nx; i++) {
+        const a = i + j * t.nx
+        index.push(a, a + t.nx, a + 1, a + 1, a + t.nx, a + t.nx + 1)
+      }
     }
-    for (const [x, z] of [line[0], line[line.length - 1]]) {
-      const h = height(x)
-      quad([x, 0, z], [x, 0, outerZ], [x, h, outerZ], [x, h, z]) // ends
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(t.positions, 3))
+    geometry.setAttribute('color', new THREE.BufferAttribute(t.colors, 3))
+    geometry.setIndex(index)
+    geometry.computeVertexNormals()
+    const ground = new THREE.Mesh(geometry, this.ground)
+    this.body.parent!.add(ground)
+    this.banks.push(ground)
+  }
+
+  // Adds a flip zone's lid: a tinted glass strip between two polylines of
+  // (x, y, z) points, with a glowing rim along both edges.
+  addLid([left, right]: number[][][]) {
+    const positions: number[] = []
+    for (let i = 0; i + 1 < left.length; i++) {
+      positions.push(...left[i], ...right[i], ...left[i + 1], ...left[i + 1], ...right[i], ...right[i + 1])
     }
     const geometry = new THREE.BufferGeometry()
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-    geometry.computeVertexNormals()
-    const bank = new THREE.Mesh(geometry, this.ground)
-    this.body.parent!.add(bank)
-    this.banks.push(bank)
+    const lid = new THREE.Mesh(geometry, this.glass)
+    lid.renderOrder = 1
+    this.body.parent!.add(lid)
+    this.banks.push(lid)
+    for (const edge of [left, right]) {
+      const line = new THREE.BufferGeometry().setFromPoints(edge.map((p) => new THREE.Vector3(p[0], p[1], p[2])))
+      const rim = new THREE.Line(line, this.rim)
+      this.body.parent!.add(rim)
+      this.banks.push(rim)
+    }
+  }
+
+  // Shows or hides the domain's outline (the tank's walls; the river doesn't need it).
+  showBounds(visible: boolean) {
+    this.bounds.visible = visible
   }
 
   // Shows the floating body (tank coordinates, quaternion [w, x, y, z]), or hides it.
@@ -339,27 +362,31 @@ export class Renderer3D {
   }
 
   // Shows whirlpools as spinning spiral discs lying on the water (tank
-  // coordinates; y is the water surface), replacing any previous ones.
-  setSwirls(swirls: { x: number; y: number; z: number; radius: number; strength: number }[]) {
-    for (const d of this.swirlDiscs) {
-      d.mesh.removeFromParent()
-      d.mesh.geometry.dispose()
-      d.mesh.material.dispose()
-    }
-    this.swirlDiscs.length = 0
-    if (swirls.length === 0) return
-    this.swirlTexture ??= spiralTexture()
-    for (const w of swirls) {
-      const material = new THREE.MeshBasicMaterial({
-        map: this.swirlTexture, transparent: true, depthWrite: false, side: THREE.DoubleSide,
-        color: 0xbdf3ff, blending: THREE.AdditiveBlending, // glows on the water, readable at a glancing angle
-      })
-      const mesh = new THREE.Mesh(new THREE.CircleGeometry(w.radius, 48), material)
-      mesh.rotation.x = -Math.PI / 2
-      mesh.position.set(w.x, w.y, w.z)
-      this.body.parent!.add(mesh)
-      this.swirlDiscs.push({ mesh, strength: w.strength })
-    }
+  // coordinates; y is the water surface). `level` (0–1) fades a disc in and out as
+  // its swirl comes and goes. Discs are pooled; call every frame.
+  setSwirls(swirls: { x: number; y: number; z: number; radius: number; strength: number; level: number }[]) {
+    if (swirls.length > 0) this.swirlTexture ??= spiralTexture()
+    swirls.forEach((w, i) => {
+      let d = this.swirlDiscs[i]
+      if (!d) {
+        const material = new THREE.MeshBasicMaterial({
+          map: this.swirlTexture, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+          color: 0xbdf3ff, blending: THREE.AdditiveBlending, // glows on the water, readable at a glancing angle
+        })
+        const mesh = new THREE.Mesh(new THREE.CircleGeometry(1, 48), material)
+        mesh.rotation.x = -Math.PI / 2
+        this.body.parent!.add(mesh)
+        d = { mesh, strength: 0 }
+        this.swirlDiscs.push(d)
+      }
+      d.strength = w.strength
+      d.mesh.visible = w.level > 0
+      d.mesh.position.set(w.x, w.y, w.z)
+      // Grows in from 60% as it spins up.
+      d.mesh.scale.setScalar(w.radius * (0.6 + 0.4 * w.level))
+      d.mesh.material.opacity = w.level
+    })
+    for (let i = swirls.length; i < this.swirlDiscs.length; i++) this.swirlDiscs[i].mesh.visible = false
   }
 
   // Shows the power-ups as glowing gems (tank coordinates), spinning and bobbing;
@@ -386,10 +413,17 @@ export class Renderer3D {
   }
 
   // Glides the camera after a point (tank coordinates; the race tank is unrotated)
-  // keeping the current viewing angle, or stops following with null.
-  follow(point: number[] | null) {
+  // keeping the current viewing angle, or stops following with null. `snap` jumps
+  // there at once.
+  follow(point: number[] | null, snap = false) {
     this.following = point !== null
-    if (point) this.followGoal.set(point[0], point[1], point[2])
+    if (!point) return
+    this.followGoal.set(point[0], point[1], point[2])
+    if (snap) {
+      const step = this.followGoal.clone().sub(this.controls.target)
+      this.controls.target.add(step)
+      this.camera.position.add(step)
+    }
   }
 
   // Tank orientation as a quaternion [w, x, y, z] (tank → world).
@@ -455,7 +489,10 @@ export class Renderer3D {
     for (const d of this.ducks) disposeDuck(d)
     this.setGate(null)
     this.setFinish(null)
-    this.setSwirls([])
+    for (const d of this.swirlDiscs) {
+      d.mesh.geometry.dispose()
+      d.mesh.material.dispose()
+    }
     this.setPickups([])
     this.swirlTexture?.dispose()
     this.wood.dispose()
@@ -463,6 +500,8 @@ export class Renderer3D {
     this.checker.dispose()
     this.stone.dispose()
     this.ground.dispose()
+    this.glass.dispose()
+    this.rim.dispose()
     this.bounds.dispose()
     this.floor.dispose()
     this.gl.dispose()

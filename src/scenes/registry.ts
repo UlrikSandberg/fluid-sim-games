@@ -31,7 +31,7 @@ export const scenes: SceneInfo[] = [
   {
     path: '#/race',
     title: 'River Race',
-    description: 'The game (in progress): a river with a waterfall on the GPU solver. Ducks and race rules next.',
+    description: 'The game: named ducks race down a river you build from bends, U-turns, waterfalls and flip zones (or roll at random). GPU solver.',
     status: 'ready',
     component: RiverRace,
   },

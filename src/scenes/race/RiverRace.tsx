@@ -5,13 +5,15 @@ import { Hud } from '../../ui/Hud'
 import { Legend } from '../../ui/Legend'
 import { Section, Slider } from '../../ui/controls'
 import { courseState, raceParams, raceView, startRaceLoop, type RaceController, type Standing } from './loop'
-import { countFor, raceSettings, type RandomDial } from './features'
+import { RANDOM_RANGES, countFor, raceSettings, type RandomDial } from './features'
 import { duckColor, duckName, racers, renderEvents, renderStandings, saveRacers } from './racers'
-import { defaultRiverLayout, estimateParticles, riverLayout, type RiverLayout } from './riverScene'
+import { defaultRiverLayout, estimateParticles, riverLayout } from './riverScene'
+import { courseLength, minRadius, piecesOverlap, type Piece, type PieceCounts, type PieceKind } from './course'
 
-// The game scene: named ducks race down a winding river with a waterfall (GPU
-// solver). A gate countdown starts it, a finish line ends it, and the results say
-// who does the chore. Random swirls, obstacles and power-ups come next.
+// The game scene: named ducks race down a river built from pieces (straights,
+// bends, U-turns, waterfalls, flip zones) on the GPU solver. The ducks hang at the
+// gate while the water settles; Start counts down and opens it, a finish line
+// ends it, and the results say who does the chore.
 export function RiverRace() {
   const canvasHostRef = useRef<HTMLDivElement>(null)
   const hudRef = useRef<HTMLDivElement>(null)
@@ -19,8 +21,10 @@ export function RiverRace() {
   const standingsRef = useRef<HTMLDivElement>(null)
   const eventsRef = useRef<HTMLDivElement>(null)
   const phaseRef = useRef('idle')
+  const courseRef = useRef(0)
+  const [, setCourse] = useState(0)
   const [results, setResults] = useState<Standing[] | null>(null)
-  const [, setPhaseTick] = useState(0) // re-renders the panel when a race changes phase (e.g. a new course)
+  const [phase, setPhase] = useState('idle') // re-renders the page when a race changes phase
   const controllerRef = useRef<RaceController | null>(null)
   const [paused, setPaused] = useState(false)
   const [noWebGpu, setNoWebGpu] = useState(false)
@@ -48,17 +52,21 @@ export function RiverRace() {
         standingsRef.current.style.display = show ? 'block' : 'none'
         if (show) renderStandings(standingsRef.current, s.standings)
       }
-      // React only hears about the race when it ends (and when a new one starts).
+      // React only hears about the race when its phase changes, or the course does.
+      if (s.course !== courseRef.current) {
+        courseRef.current = s.course
+        setCourse(s.course)
+      }
       if (s.phase !== phaseRef.current) {
         phaseRef.current = s.phase
         setResults(s.phase === 'finished' ? s.standings : null)
-        setPhaseTick((t) => t + 1)
+        setPhase(s.phase)
       }
       if (hudRef.current) {
         hudRef.current.textContent =
           `GPU · ${s.fps.toFixed(0)} fps · ${s.particles.toLocaleString()} particles · ${s.ducks} ducks · ` +
           (s.status === 'running' ? `${s.substeps.toFixed(1)} substeps/frame` : s.status) +
-          `\nS: start race · D: add a duck · F: follow camera · drag: orbit · wheel: zoom · Space: pause`
+          `\nS: start · N: new course · D: add a duck · F: follow camera · drag: orbit · wheel: zoom · Space: pause`
       }
     })
     controllerRef.current = controller
@@ -90,7 +98,8 @@ export function RiverRace() {
       const mode = colorModes[Number(e.key) - 1]
       if (mode) changeColorMode(mode.id)
       else if (e.code === 'KeyD') controllerRef.current?.dropDuck()
-      else if (e.code === 'KeyS') controllerRef.current?.startRace(raceView.duckCount)
+      else if (e.code === 'KeyS') controllerRef.current?.startRace()
+      else if (e.code === 'KeyN') controllerRef.current?.newCourse()
       else if (e.code === 'KeyF') raceView.follow = !raceView.follow
       else if (e.code === 'KeyV') changeStyle(style === 'water' ? 'particles' : 'water')
       else if (e.code === 'Space') {
@@ -110,7 +119,14 @@ export function RiverRace() {
       <div ref={standingsRef} className="standings" style={{ display: 'none' }} />
       <div ref={eventsRef} className="events" />
       {results && (
-        <Results standings={results} onAgain={() => controllerRef.current?.startRace(raceView.duckCount)} />
+        <Results standings={results} onAgain={() => controllerRef.current?.startRace()}
+          onNewCourse={() => controllerRef.current?.newCourse()} />
+      )}
+      {phase === 'setup' && (
+        <div className="setup">
+          <button className="go" onClick={() => controllerRef.current?.startRace()}>▶ Start race (S)</button>
+          <button onClick={() => controllerRef.current?.newCourse()}>🎲 New course (N)</button>
+        </div>
       )}
       {noWebGpu && (
         <div className="notice">
@@ -134,7 +150,7 @@ export function RiverRace() {
 }
 
 // The end-of-race card: the winner, the placings, and who does the chore.
-function Results({ standings, onAgain }: { standings: Standing[]; onAgain: () => void }) {
+function Results({ standings, onAgain, onNewCourse }: { standings: Standing[]; onAgain: () => void; onNewCourse: () => void }) {
   const winner = standings[0]
   const chore = racers.chore === 'last' ? standings[standings.length - 1] : winner
   return (
@@ -157,7 +173,10 @@ function Results({ standings, onAgain }: { standings: Standing[]; onAgain: () =>
         🧽 <strong style={{ color: duckColor(chore.index) }}>{duckName(chore.index)}</strong> does the chore
         {standings.length > 1 && (racers.chore === 'last' ? ' (last place)' : ' (the winner)')}.
       </p>
-      <button onClick={onAgain}>Race again (S)</button>
+      <div className="buttons">
+        <button onClick={onAgain}>Race again here (S)</button>
+        <button onClick={onNewCourse}>New course (N)</button>
+      </div>
     </div>
   )
 }
@@ -174,7 +193,8 @@ interface PanelProps {
 
 const DUCK_BASE = [1.6, 1, 1.2]
 
-// Course dials edit riverLayout and apply on Reset; water and duck dials are live.
+// Course dials edit riverLayout and apply to the next course; water and duck
+// dials are live.
 function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, style, onStyle }: PanelProps) {
   const [, rerender] = useReducer((x: number) => x + 1, 0)
   const [duckScale, setDuckScale] = useState(1)
@@ -182,27 +202,41 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
     fn()
     rerender()
   }
-  const reset = () => update(() => controller()?.reset())
-  const resetPending = JSON.stringify(riverLayout) !== courseState.built
-  const course = (label: string, key: keyof RiverLayout, min: number, max: number, step: number, digits = 1) => (
+  const pending = JSON.stringify(riverLayout) !== courseState.built
+  const length = courseLength(riverLayout.pieces, riverLayout.width / 2)
+  const overlap = piecesOverlap(riverLayout.pieces, riverLayout.width)
+  const dice = (key: RandomDial) => (
+    <button className={raceSettings.random[key] ? 'dice on' : 'dice'} aria-pressed={raceSettings.random[key]}
+      title={raceSettings.random[key] ? 'random for each new course' : 'fixed at this value'}
+      onClick={() => update(() => (raceSettings.random[key] = !raceSettings.random[key]))}>
+      🎲
+    </button>
+  )
+  const course = (label: string, key: 'spacing' | 'width' | 'depth', min: number, max: number, step: number, digits = 1) => (
     <Slider key={key} label={label} value={riverLayout[key]} min={min} max={max} step={step}
       format={(v) => v.toFixed(digits)} onChange={(v) => update(() => (riverLayout[key] = v))} />
   )
-  // A course dial with a 🎲 toggle: when on, the race draws it at random.
-  const randomizable = (label: string, key: RandomDial, min: number, max: number, step: number, digits = 1) => (
+  // A random course's ingredient, with a 🎲 toggle: on, it's drawn from its range.
+  const count = (label: string, key: keyof PieceCounts, max: number, step = 1) => (
     <div key={key} className="dial">
-      {course(label, key, min, max, step, digits)}
-      <button className={raceSettings.random[key] ? 'dice on' : 'dice'} aria-pressed={raceSettings.random[key]}
-        title={raceSettings.random[key] ? 'random each race' : 'fixed at this value'}
-        onClick={() => update(() => (raceSettings.random[key] = !raceSettings.random[key]))}>
-        🎲
-      </button>
+      <Slider label={label} value={raceSettings.counts[key]} min={key === 'length' ? 40 : 0} max={max} step={step}
+        format={(v) => (raceSettings.random[key] ? `${RANDOM_RANGES[key].join('–')}` : v.toFixed(0))}
+        onChange={(v) => update(() => {
+          raceSettings.counts[key] = v
+          raceSettings.random[key] = false
+        })} />
+      {dice(key)}
     </div>
   )
   const perFifty = (label: string, key: 'rocks' | 'swirls' | 'pickups') => (
     <Slider key={key} label={label} value={raceSettings[key]} min={0} max={5} step={0.5}
-      format={(v) => `${v.toFixed(1)} → ${countFor(v, riverLayout, key)}`} onChange={(v) => update(() => (raceSettings[key] = v))} />
+      format={(v) => `${v.toFixed(1)} → ${countFor(v, length, key)}`} onChange={(v) => update(() => (raceSettings[key] = v))} />
   )
+  // Editing the pieces keeps them: the next course uses them as they are.
+  const editPieces = (fn: (pieces: Piece[]) => void) => update(() => {
+    fn(riverLayout.pieces)
+    raceSettings.random.pieces = false
+  })
   const dtLimit = cflDt(raceParams)
 
   return (
@@ -212,34 +246,57 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
         <button onClick={onTogglePause} title="Space">
           {paused ? 'Resume' : 'Pause'}
         </button>
-        <button onClick={reset} className={resetPending ? 'pending' : undefined}>
-          {resetPending ? 'Reset to apply' : 'Reset'}
+        <button onClick={() => controller()?.newCourse()} title="N" className={pending ? 'pending' : undefined}
+          disabled={overlap && !raceSettings.random.pieces}>
+          {pending ? 'New course to apply' : 'New course'}
         </button>
-        <button onClick={() => controller()?.startRace(raceView.duckCount)} title="S">
-          Start race
+        <button onClick={() => controller()?.startRace()} title="S">
+          Start
         </button>
       </div>
 
-      <Section title="Race (each start)">
+      <Section title="Race (each course)">
         <p className="note">per 50 units of river, so longer courses get more</p>
         {perFifty('Rocks', 'rocks')}
         {perFifty('Swirls', 'swirls')}
         {perFifty('Power-ups', 'pickups')}
-        <p className="note">⬆ Flip · ⚡ Boost · 🌌 Zero-G</p>
+        <p className="note">swirls come and go · ⬆ Flip · ⚡ Boost · 🌌 Zero-G</p>
       </Section>
 
-      <Section title="Course (on reset)">
+      <Section title="Course (each new course)">
         {course('Particle size', 'spacing', 0.3, 0.6, 0.05, 2)}
         <p className="note">≈{estimateParticles(riverLayout).toLocaleString()} particles · finer means more substeps too</p>
-        <p className="note">🎲 = drawn at random each race; off = your value</p>
-        {randomizable('Length', 'length', 30, 120, 5, 0)}
-        {randomizable('Width', 'width', 8, 20, 1, 0)}
-        {randomizable('Bends', 'bends', 0, 3, 0.5)}
-        {randomizable('Bend size', 'bendSize', 0, 8, 0.5)}
-        {randomizable('Waterfall', 'ledgeHeight', 0, 10, 0.5)}
-        {course('Upper depth', 'upperDepth', 1, 5, 0.5)}
-        {course('Lower depth', 'lowerDepth', 1, 6, 0.5)}
-        <button className="wide" onClick={() => update(() => Object.assign(riverLayout, structuredClone(defaultRiverLayout)))}>
+        <p className="note">🎲 = drawn at random for each new course; off = your value</p>
+        <div className="dial">
+          {course('Width', 'width', 8, 20, 1, 0)}
+          {dice('width')}
+        </div>
+        {course('Depth', 'depth', 1.5, 4, 0.5)}
+        <div className="dial">
+          <span className="note">{raceSettings.random.pieces ? 'Random pieces, made of:' : 'Your pieces (🎲 for random)'}</span>
+          {dice('pieces')}
+        </div>
+        {raceSettings.random.pieces && (
+          <>
+            {count('Length', 'length', 160, 5)}
+            {count('Waterfalls', 'waterfalls', 4)}
+            {count('U-turns', 'uTurns', 2)}
+            {count('Bends', 'bends', 4)}
+            {count('Flip zones', 'flipZones', 3)}
+          </>
+        )}
+        <PieceList pieces={riverLayout.pieces} halfWidth={riverLayout.width / 2} onEdit={editPieces} />
+        <p className="note">
+          {Math.round(length)} long · start and finish straights included
+        </p>
+        {overlap && !raceSettings.random.pieces && (
+          <p className="note warn">The river runs into itself: change a bend or add a straight.</p>
+        )}
+        <button className="wide" onClick={() => update(() => {
+          Object.assign(riverLayout, structuredClone(defaultRiverLayout))
+          raceSettings.random.pieces = false
+          raceSettings.random.width = false
+        })}>
           Default course
         </button>
       </Section>
@@ -265,7 +322,10 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
 
       <Section title="Racers">
         <Slider label="Racers" value={raceView.duckCount} min={1} max={8} step={1} format={(v) => v.toFixed(0)}
-          onChange={(v) => update(() => (raceView.duckCount = v))} />
+          onChange={(v) => update(() => {
+            raceView.duckCount = v
+            controller()?.lineUp(v) // re-hangs the gate before a race
+          })} />
         {racers.names.slice(0, raceView.duckCount).map((name, i) => (
           <label key={i} className="row racer">
             <span className="dot" style={{ background: duckColor(i) }} />
@@ -338,5 +398,60 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
         </label>
       </Section>
     </details>
+  )
+}
+
+const PIECE_INFO: Record<PieceKind, { icon: string; label: string }> = {
+  straight: { icon: '━', label: 'Straight' },
+  bend: { icon: '↷', label: 'Bend' },
+  waterfall: { icon: '⤵', label: 'Waterfall' },
+  flip: { icon: '⇅', label: 'Flip zone' },
+}
+
+// The course's pieces, in order from the start straight to the finish straight:
+// each with its dial, move up/down and remove, plus buttons to add more.
+function PieceList({ pieces, halfWidth, onEdit }: { pieces: Piece[]; halfWidth: number; onEdit: (fn: (pieces: Piece[]) => void) => void }) {
+  const tightest = minRadius(halfWidth)
+  const add: [string, () => Piece][] = [
+    ['Straight', () => ({ kind: 'straight', length: 8 })],
+    ['Bend', () => ({ kind: 'bend', angle: 90, radius: tightest + 6 })],
+    ['U-turn', () => ({ kind: 'bend', angle: 180, radius: tightest })],
+    ['Waterfall', () => ({ kind: 'waterfall', drop: 4 })],
+    ['Flip zone', () => ({ kind: 'flip', length: 12 })],
+  ]
+  return (
+    <div className="pieces">
+      {pieces.map((p, i) => (
+        <div key={i} className="piece">
+          <div className="piece-head">
+            <span>{PIECE_INFO[p.kind].icon} {p.kind === 'bend' && Math.abs(p.angle) === 180 ? 'U-turn' : PIECE_INFO[p.kind].label}</span>
+            <button title="move up" disabled={i === 0} onClick={() => onEdit((ps) => ps.splice(i - 1, 2, ps[i], ps[i - 1]))}>↑</button>
+            <button title="move down" disabled={i === pieces.length - 1} onClick={() => onEdit((ps) => ps.splice(i, 2, ps[i + 1], ps[i]))}>↓</button>
+            <button title="remove" onClick={() => onEdit((ps) => ps.splice(i, 1))}>✕</button>
+          </div>
+          {(p.kind === 'straight' || p.kind === 'flip') && (
+            <Slider label="Length" value={p.length} min={p.kind === 'flip' ? 6 : 2} max={40} step={1} format={(v) => v.toFixed(0)}
+              onChange={(v) => onEdit(() => (p.length = v))} />
+          )}
+          {p.kind === 'waterfall' && (
+            <Slider label="Drop" value={p.drop} min={1} max={8} step={0.5} format={(v) => v.toFixed(1)}
+              onChange={(v) => onEdit(() => (p.drop = v))} />
+          )}
+          {p.kind === 'bend' && (
+            <>
+              <Slider label="Turn" value={p.angle} min={-180} max={180} step={15}
+                format={(v) => `${v < 0 ? '↶' : '↷'} ${Math.abs(v)}°`} onChange={(v) => onEdit(() => (p.angle = v))} />
+              <Slider label="Radius" value={Math.max(p.radius, tightest)} min={tightest} max={40} step={1}
+                format={(v) => v.toFixed(0)} onChange={(v) => onEdit(() => (p.radius = v))} />
+            </>
+          )}
+        </div>
+      ))}
+      <div className="buttons add">
+        {add.map(([label, make]) => (
+          <button key={label} onClick={() => onEdit((ps) => ps.push(make()))}>+ {label}</button>
+        ))}
+      </div>
+    </div>
   )
 }

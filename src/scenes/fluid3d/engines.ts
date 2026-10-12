@@ -3,7 +3,7 @@ import {
   collideBodies, createState, integrateObstacle, makeObstacle, obstacleLattice, setObstacle, step,
   type FrameMotion, type Obstacle, type SimState,
 } from '../../sim/sph'
-import { GpuSph, requestDevice, type GpuBody, type GpuScene } from '../../gpu/sphGpu'
+import { GpuSph, requestDevice, type GpuBody, type GpuScene, type GpuSwirl } from '../../gpu/sphGpu'
 import { MAX_BODIES } from '../../gpu/sphShaders'
 
 export type EngineKind = 'cpu' | 'gpu'
@@ -87,6 +87,11 @@ export class GpuEngine implements FluidEngine {
   static async create(params: Params, scene?: GpuScene): Promise<GpuEngine | null> {
     const device = await requestDevice()
     return device ? new GpuEngine(new GpuSph(device, params, scene), params) : null
+  }
+
+  // Replaces the river's whirlpools.
+  setSwirls(swirls: GpuSwirl[]) {
+    this.gpu.setSwirls(swirls)
   }
 
   // The river current (live-adjustable), when the scene has one.

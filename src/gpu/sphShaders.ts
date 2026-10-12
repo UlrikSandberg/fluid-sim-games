@@ -17,10 +17,15 @@ export const SCAN_THREADS = 256
 export const MAX_BOXES = 8 // the ledge plus rocks
 export const MAX_BODIES = 8
 export const MAX_SWIRLS = 8
+export const MAX_FALLS = 4 // waterfalls along a course
+export const MAX_ZONES = 3 // flip zones along a course
 export const BODY_VEC4S = 10 // per Body struct
-// Slots: 18 fixed vec4s, swirl count, swirls, boxes, bodies (see GpuSph.writeParams).
-export const SWIRL_SLOT = 18
-export const BOX_SLOT = SWIRL_SLOT + 1 + MAX_SWIRLS
+// Slots: 19 fixed vec4s, swirl count, swirls, falls, zones, boxes, bodies (see
+// GpuSph.writeParams).
+export const SWIRL_SLOT = 19
+export const FALL_SLOT = SWIRL_SLOT + 1 + MAX_SWIRLS
+export const ZONE_SLOT = FALL_SLOT + MAX_FALLS
+export const BOX_SLOT = ZONE_SLOT + MAX_ZONES
 export const BODY_SLOT = BOX_SLOT + 2 * MAX_BOXES
 export const PARAMS_VEC4S = BODY_SLOT + BODY_VEC4S * MAX_BODIES
 // How fast (1/s) water inside a swirl turns toward the swirl's rotation.
@@ -55,13 +60,16 @@ struct Params {
   domainMin: vec4f,
   domainMax: vec4f,
   bodyMisc: vec4f,   // fixed-point scale for the force atomics
-  current: vec4f,    // river current: target speed along +x, relaxation rate (0 = off)
-  recycle: vec4f,    // past x = exitX, move to inletX + (x − exitX) and up by lift; enabled (0/1)
+  current: vec4f,    // river current: target speed downstream, relaxation rate (0 = off)
+  recycle: vec4f,    // past s = exitS, move to inletS + (s − exitS) and up by lift; enabled (0/1)
   boxCount: vec4u,   // static solid boxes in use
-  channel: vec4f,    // winding channel: amplitude, wavenumber, half width, enabled (0/1)
-  channel2: vec4f,   // centreline z at amplitude 0, 0, 0, 0
+  course: vec4f,     // river course: half width, sample spacing, sample count, enabled (0/1)
+  course2: vec4f,    // lookup cell size, bed height at the start, 0, 0
+  course3: vec4u,    // lookup cells along x and z, waterfalls, flip zones
   swirlCount: vec4u,
   swirls: array<vec4f, ${MAX_SWIRLS}>, // whirlpools: centre x, centre z, radius, peak speed (sign = direction)
+  falls: array<vec4f, ${MAX_FALLS}>,   // waterfalls: lip s, drop, 0, 0
+  zones: array<vec4f, ${MAX_ZONES}>,   // flip zones: s from, s to, gravity scale, lid height
   boxes: array<vec4f, ${2 * MAX_BOXES}>, // min, max per box (static, solid)
   bodies: array<Body, ${MAX_BODIES}>,
 }
@@ -71,15 +79,17 @@ struct Particle {
   vel: vec4f,
 }
 
-// Six storage buffers, the most WebGPU guarantees is 8 per stage (Chrome on
+// Seven storage buffers, the most WebGPU guarantees is 8 per stage (Chrome on
 // Metal offers 10), so related arrays share a buffer at fixed offsets
-// (n particles, C = numCells):
+// (n particles, C = numCells, N course samples):
 //   particles:   A [0, n)  (unsorted, the persistent state) · B [n, 2n) (cell-sorted)
 //   fluid:       aux [0, n) (density, pressure, neighbours) · v* [n, 2n)
 //   indices:     cellOf [0, n) · cellStart [n, n+C+1) · wallCellStart [n+C+1, n+2C+2)
 //   cellAtomics: count [0, C+1) · cursor [C+1, 2C+1)
 //   boundary:    walls [0, nWall) (xyz, ψ; cell-sorted) · bodies [nWall, …) (pos.xyz ψ, vel.xyz 0 per particle)
 //   bodyForce:   per body: force xyz, torque xyz (fixed point)
+//   course:      samples [0, N) (centreline x, z, tangent x, z every course.y along it) ·
+//                lookup [N, …) (nearest sample per ground cell, u32 bits, four per vec4)
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(2) var<storage, read_write> fluid: array<vec4f>;
@@ -87,6 +97,7 @@ struct Particle {
 @group(0) @binding(4) var<storage, read_write> cellAtomics: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read_write> boundary: array<vec4f>;
 @group(0) @binding(6) var<storage, read_write> bodyForce: array<atomic<i32>>;
+@group(0) @binding(7) var<storage, read> course: array<vec4f>;
 
 fn cellStartAt(c: u32) -> u32 { return indices[P.counts.x + c]; }
 fn wallCellStartAt(c: u32) -> u32 { return indices[P.counts.x + P.counts.y + 1u + c]; }
@@ -125,14 +136,49 @@ fn frameAccel(x: vec3f, v: vec3f) -> vec3f {
   return -cross(P.alpha.xyz, r) - cross(w, cross(w, r)) - 2.0 * cross(w, v);
 }
 
-// The winding channel's centreline z(x) = z₀ + A sin(k x) and its slope dz/dx.
-fn channelZ(x: f32) -> f32 { return P.channel2.x + P.channel.x * sin(P.channel.y * x); }
-fn channelSlope(x: f32) -> f32 { return P.channel.x * P.channel.y * cos(P.channel.y * x); }
+// Where a point is on the river course: s along the centreline, d across it
+// (toward the left normal (−t.z, t.x)) and the tangent t there, from the nearest
+// centreline sample (the lookup cell's) and that sample's tangent line.
+struct Where {
+  s: f32,
+  d: f32,
+  t: vec2f,
+}
 
-// Downstream direction: +x, or along the channel where it winds.
-fn downstream(x: vec3f) -> vec3f {
-  if (P.channel.w < 0.5) { return vec3f(1.0, 0.0, 0.0); }
-  return normalize(vec3f(1.0, 0.0, channelSlope(x.x)));
+fn locate(x: vec3f) -> Where {
+  let cell = P.course2.x;
+  let cx = clamp(i32(floor(x.x / cell)), 0, i32(P.course3.x) - 1);
+  let cz = clamp(i32(floor(x.z / cell)), 0, i32(P.course3.y) - 1);
+  let c = u32(cx) + u32(cz) * P.course3.x;
+  let k = bitcast<u32>(course[u32(P.course.z) + c / 4u][c % 4u]);
+  let smp = course[k];
+  let rel = x.xz - smp.xy;
+  return Where(f32(k) * P.course.y + dot(rel, smp.zw), dot(rel, vec2f(-smp.w, smp.z)), smp.zw);
+}
+
+// The point s along the course and d across it (x, z), and the tangent there.
+fn courseAt(s: f32, d: f32) -> vec4f {
+  let k = u32(clamp(round(s / P.course.y), 0.0, P.course.z - 1.0));
+  let smp = course[k];
+  let along = s - f32(k) * P.course.y;
+  return vec4f(smp.xy + smp.zw * along + vec2f(-smp.w, smp.z) * d, smp.zw);
+}
+
+// The river bed's height at s: the start's, less every waterfall passed.
+fn bedAt(s: f32) -> f32 {
+  var bed = P.course2.y;
+  for (var f = 0u; f < P.course3.z; f++) {
+    if (s >= P.falls[f].x) { bed -= P.falls[f].y; }
+  }
+  return bed;
+}
+
+// The flip zone s is in, or −1.
+fn zoneAt(s: f32) -> i32 {
+  for (var z = 0u; z < P.course3.w; z++) {
+    if (s >= P.zones[z].x && s <= P.zones[z].y) { return i32(z); }
+  }
+  return -1;
 }
 
 fn cellCoords(x: vec3f) -> vec3i {
@@ -299,10 +345,16 @@ fn accel(@builtin(global_invocation_id) gid: vec3u) {
   let c = cellCoords(xi);
   let mass = P.fluid.x;
   var a = P.gravity.xyz + frameAccel(xi, vi);
-  // River current: relax the downstream velocity toward the target speed
-  // (stands in for the slope plus bed friction of a real river).
-  let t = downstream(xi);
-  a += P.current.y * (P.current.x - dot(vi, t)) * t;
+  if (P.course.w > 0.5) {
+    let w = locate(xi);
+    // River current: relax the downstream velocity toward the target speed
+    // (stands in for the slope plus bed friction of a real river).
+    let t = vec3f(w.t.x, 0.0, w.t.y);
+    a += P.current.y * (P.current.x - dot(vi, t)) * t;
+    // Flip zones scale (reverse) gravity.
+    let zone = zoneAt(w.s);
+    if (zone >= 0) { a += P.gravity.xyz * (P.zones[zone].z - 1.0); }
+  }
   // Whirlpools: turn the horizontal velocity toward a rotation about the swirl's
   // centre (0 at the centre and rim, fastest at mid radius), with a gentle inward pull.
   for (var w = 0u; w < P.swirlCount.x; w++) {
@@ -444,18 +496,52 @@ fn integrate(@builtin(global_invocation_id) gid: vec3u) {
     if (v[axis] * side < 0.0) { v[axis] = -v[axis] * e; }
   }
 
-  // Winding channel banks: keep the perpendicular distance from the centreline
-  // within the half width (less the particle radius), reflecting off the bank.
-  if (P.channel.w > 0.5) {
-    let slope = channelSlope(x.x);
-    let stretch = sqrt(1.0 + slope * slope);
-    let across = (x.z - channelZ(x.x)) / stretch; // signed perpendicular distance
-    let limit = P.channel.z - r;
-    if (abs(across) > limit) {
-      let n = sign(across) * vec3f(-slope, 0.0, 1.0) / stretch; // outward bank normal
-      x -= (abs(across) - limit) * n;
+  // The river course: banks, the ends, the bed (and the lips of its waterfalls)
+  // and the lids over flip zones, each pushing out to the inside and reflecting
+  // the velocity into it.
+  if (P.course.w > 0.5) {
+    let w = locate(x);
+    let t = vec3f(w.t.x, 0.0, w.t.y);
+    let across = vec3f(-w.t.y, 0.0, w.t.x);
+    let limit = P.course.x - r;
+    if (abs(w.d) > limit) {
+      let n = sign(w.d) * across; // outward bank normal
+      x -= (abs(w.d) - limit) * n;
       let vn = dot(v, n);
       if (vn > 0.0) { v -= (1.0 + e) * vn * n; }
+    }
+    let courseEnd = (P.course.z - 1.0) * P.course.y;
+    if (w.s < r || w.s > courseEnd - r) {
+      let n = select(t, -t, w.s < r); // outward end normal
+      x -= select(w.s - (courseEnd - r), r - w.s, w.s < r) * n;
+      let vn = dot(v, n);
+      if (vn > 0.0) { v -= (1.0 + e) * vn * n; }
+    }
+    let bed = bedAt(w.s);
+    if (x.y < bed + r) {
+      // Under the bed: up through it, or downstream past the next lip if that's nearer
+      // and clears the bed beyond it.
+      var lip = 1e9;
+      for (var f = 0u; f < P.course3.z; f++) {
+        if (P.falls[f].x > w.s) { lip = min(lip, P.falls[f].x); }
+      }
+      let past = lip + r - w.s;
+      if (past < bed + r - x.y && x.y >= bedAt(lip) + r) {
+        x += past * t;
+        let vt = dot(v, t);
+        if (vt < 0.0) { v -= (1.0 + e) * vt * t; }
+      } else {
+        x.y = bed + r;
+        if (v.y < 0.0) { v.y = -v.y * e; }
+      }
+    }
+    let zone = zoneAt(w.s);
+    if (zone >= 0 && P.zones[zone].w > 0.0) {
+      let lid = bed + P.zones[zone].w - r;
+      if (x.y > lid) {
+        x.y = lid;
+        if (v.y > 0.0) { v.y = -v.y * e; }
+      }
     }
   }
 
@@ -472,14 +558,19 @@ fn integrate(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
-  // Recycling: water reaching the end of the channel re-enters at the inlet,
-  // lifted by the height difference (a pump, so the river never runs dry).
-  if (P.recycle.w > 0.5 && x.x > P.recycle.x) {
-    let exitedAt = x.x;
-    x.x = x.x - P.recycle.x + P.recycle.y;
-    x.y = min(x.y + P.recycle.z, hi.y);
-    // Keep the particle's place across the channel.
-    if (P.channel.w > 0.5) { x.z += channelZ(x.x) - channelZ(exitedAt); }
+  // Recycling: water reaching the end of the course re-enters at the inlet,
+  // lifted by the height difference (a pump, so the river never runs dry), keeping
+  // its place across the channel and its velocity relative to the channel.
+  if (P.recycle.w > 0.5 && P.course.w > 0.5) {
+    let w = locate(x);
+    if (w.s > P.recycle.x) {
+      let inlet = courseAt(P.recycle.y + (w.s - P.recycle.x), w.d);
+      let along = dot(v.xz, w.t);
+      let side = dot(v.xz, vec2f(-w.t.y, w.t.x));
+      let tIn = inlet.zw;
+      x = vec3f(inlet.x, min(x.y + P.recycle.z, hi.y), inlet.y);
+      v = vec3f(along * tIn.x - side * tIn.y, v.y, along * tIn.y + side * tIn.x);
+    }
   }
   particles[i] = Particle(vec4f(x, 0.0), vec4f(v, 0.0));
 }
