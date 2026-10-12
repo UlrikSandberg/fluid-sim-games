@@ -1,5 +1,5 @@
 import { defaultParams3D, particleRadius, type Params } from '../../sim/params'
-import { createState, step, type SimState } from '../../sim/sph'
+import { createState, setObstacle, step, type SimState } from '../../sim/sph'
 import { advanceTank, createTankMotion, levelTarget, nudgeTarget } from '../../sim/tankMotion'
 import { Renderer3D } from '../../render/renderer3d'
 import { getColorMode, writeColors, type ColorModeId } from '../../render/colorModes'
@@ -18,6 +18,9 @@ export interface SimController3D {
   reset(): void // rebuild particles and renderer from the current params
   setPaused(paused: boolean): void
   levelTank(): void
+  dropBody(): void // a box at the top of the tank, sized from params3d.obstacleSize
+  removeBody(): void
+  hasBody(): boolean
   dispose(): void
 }
 
@@ -83,6 +86,8 @@ export function startLoop3D(container: HTMLElement, onStats: (s: Stats3D) => voi
     }
 
     renderer.setTankOrientation(tank.q)
+    const o = state.obstacle
+    renderer.setBody(o ? o.center : null, o ? o.halfSize : [], o ? o.q : [1, 0, 0, 0])
     renderer.updatePositions(state.pos, state.n)
     writeColors(getColorMode(view3d.colorMode), state, params3d, renderer.colors)
     renderer.commitColors()
@@ -121,6 +126,20 @@ export function startLoop3D(container: HTMLElement, onStats: (s: Stats3D) => voi
     },
     levelTank() {
       levelTarget(tank)
+    },
+    dropBody() {
+      // Centred near the top of the tank (in tank coordinates), clear of the lid.
+      const { min, max } = params3d.domain
+      const size = params3d.obstacleSize
+      const center = min.map((lo, d) => (lo + max[d]) / 2)
+      center[1] = max[1] - size[1] / 2 - params3d.h
+      setObstacle(state, params3d, { center, size })
+    },
+    removeBody() {
+      setObstacle(state, params3d, null)
+    },
+    hasBody() {
+      return state.obstacle !== null
     },
     dispose() {
       cancelAnimationFrame(raf)

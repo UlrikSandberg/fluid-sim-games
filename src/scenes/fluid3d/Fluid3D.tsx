@@ -146,6 +146,29 @@ function Panel3D({ controller, colorMode, onColorMode, paused, onTogglePause, dr
         </button>
       </Section>
 
+      <Section title="Floating box">
+        <div className="buttons">
+          <button onClick={() => update(() => controller()?.dropBody())}>
+            {controller()?.hasBody() ? 'Drop again' : 'Drop box'}
+          </button>
+          <button onClick={() => update(() => controller()?.removeBody())} disabled={!controller()?.hasBody()}>
+            Remove
+          </button>
+        </div>
+        <Slider label="Density" value={params3d.obstacleDensity} min={0.1} max={2} step={0.05}
+          format={(v) => `${v.toFixed(2)}ρ₀`} onChange={(v) => update(() => (params3d.obstacleDensity = v))} />
+        <p className="note">
+          {params3d.obstacleDensity < 1
+            ? `floats ${(params3d.obstacleDensity * 100).toFixed(0)}% submerged`
+            : 'denser than water: sinks'} · live
+        </p>
+        {(['Width', 'Height', 'Depth'] as const).map((label, d) => (
+          <Slider key={label} label={label} value={params3d.obstacleSize[d]} min={1} max={8} step={0.5}
+            format={(v) => v.toFixed(1)} onChange={(v) => update(() => (params3d.obstacleSize[d] = v))} />
+        ))}
+        <p className="note">size applies on the next drop</p>
+      </Section>
+
       <Section title="View">
         <label className="row">
           <span>Colour</span>

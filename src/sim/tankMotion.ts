@@ -1,4 +1,5 @@
 import type { FrameMotion } from './sph.ts'
+import { normalize, quatFromAxisAngle, quatMultiply, rotate, type Quat } from './quat.ts'
 
 // Rotating the tank. The user drags a target orientation around; the tank
 // follows it with capped angular speed and acceleration, and every frame this
@@ -8,13 +9,12 @@ import type { FrameMotion } from './sph.ts'
 // move through the water at |ω × r| ≤ MAX_SPIN · r (~20 at the tank's corners,
 // about Mach 0.2), and they never start or stop that motion abruptly.
 //
-// Quaternions are [w, x, y, z]; angular vectors are in world coordinates.
+// Quaternions are [w, x, y, z] (see quat.ts); angular vectors are in world
+// coordinates.
 
 export const MAX_SPIN = 2 // rad/s
 export const MAX_SPIN_ACCEL = 8 // rad/s²
 const SPIN_GAIN = 6 // 1/s, proportional pull toward the target for small errors
-
-export type Quat = [number, number, number, number]
 
 export interface TankMotion {
   q: Quat // current orientation (tank → world)
@@ -24,41 +24,6 @@ export interface TankMotion {
 
 export function createTankMotion(): TankMotion {
   return { q: [1, 0, 0, 0], target: [1, 0, 0, 0], omega: [0, 0, 0] }
-}
-
-export function quatMultiply(a: Quat, b: Quat): Quat {
-  return [
-    a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
-    a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
-    a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
-    a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0],
-  ]
-}
-
-export function quatFromAxisAngle(axis: number[], angle: number): Quat {
-  const len = Math.hypot(axis[0], axis[1], axis[2])
-  if (len < 1e-12 || angle === 0) return [1, 0, 0, 0]
-  const s = Math.sin(angle / 2) / len
-  return [Math.cos(angle / 2), axis[0] * s, axis[1] * s, axis[2] * s]
-}
-
-function normalize(q: Quat): Quat {
-  const len = Math.hypot(q[0], q[1], q[2], q[3])
-  return [q[0] / len, q[1] / len, q[2] / len, q[3] / len]
-}
-
-// Rotates v by q (or by q⁻¹ with inverse = true).
-export function rotate(q: Quat, v: number[], inverse = false): number[] {
-  const [w, x, y, z] = q
-  const s = inverse ? -1 : 1
-  // v' = v + 2 u × (u × v + w v), with u the vector part (negated for q⁻¹)
-  const ux = s * x
-  const uy = s * y
-  const uz = s * z
-  const tx = uy * v[2] - uz * v[1] + w * v[0]
-  const ty = uz * v[0] - ux * v[2] + w * v[1]
-  const tz = ux * v[1] - uy * v[0] + w * v[2]
-  return [v[0] + 2 * (uy * tz - uz * ty), v[1] + 2 * (uz * tx - ux * tz), v[2] + 2 * (ux * ty - uy * tx)]
 }
 
 // Applies a user rotation (world axis, angle) to the target orientation.

@@ -1,5 +1,5 @@
 import { dimOf, mouseAccel, params, particleRadius } from '../../sim/params'
-import { createState, obstacleContains, setObstacle, step, type MouseInput, type SimState } from '../../sim/sph'
+import { createState, obstacleAngle, obstacleContains, setObstacle, step, type MouseInput, type SimState } from '../../sim/sph'
 import { Renderer } from '../../render/renderer'
 import { getColorMode, view, writeColors } from '../../render/colorModes'
 
@@ -113,7 +113,7 @@ export function startLoop(container: HTMLElement, onStats: (s: Stats) => void): 
       mouse.active,
     )
     renderer.setArrow(mouse.active && mouse.kind === 'current' ? mouse.pos : null, mouse.arrow, mouse.sign)
-    renderer.setObstacle(state.obstacle?.center ?? null, state.obstacle?.halfSize ?? [], state.obstacle?.angle ?? 0)
+    renderer.setObstacle(state.obstacle?.center ?? null, state.obstacle?.halfSize ?? [], state.obstacle ? obstacleAngle(state.obstacle) : 0)
     renderer.render(view.style === 'water')
 
     frames++

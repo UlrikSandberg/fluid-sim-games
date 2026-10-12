@@ -1,5 +1,6 @@
 import { dimOf, mouseAccel, mouseSpeedCap, obstacleMass, particleMass, particleRadius, type Domain, type Params } from './params.ts'
 import { mulberry32 } from './rng.ts'
+import { cross, normalize, quatFromAxisAngle, quatMultiply, rotate, type Quat } from './quat.ts'
 import { makeKernels, poly6, spikyGradMag, type Kernels } from './kernels.ts'
 import { buildGrid, buildPairs, createGrid, stencilSums, type SpatialGrid } from './spatialHash.ts'
 
@@ -28,26 +29,32 @@ export interface SimState {
   boundaryH: number // h the boundary layers and ψ were built for
 }
 
-// A rectangle filled with boundary particles, stored as offsets in its own frame
-// and placed in the world from its pose every step.
+// A box (rectangle in 2D) filled with boundary particles, stored as offsets in
+// its own frame and placed in the world from its pose every step.
 //  - Kinematic while grabbed, or when p.obstacleDynamic is off: step() moves the
 //    centre toward `target` no faster than mouseSpeedCap, so dragging can't break CFL.
-//  - Dynamic otherwise: the fluid's reaction forces, accumulated on its boundary
-//    particles during a step, plus gravity move and spin it. Buoyancy and drag
-//    come out of that sum; nothing models them separately.
-// Orientation is a single angle, so rotation is 2D only (3D needs a quaternion
-// and an inertia tensor); bodyPoint() is the one place that applies it.
+//  - Dynamic otherwise: a rigid body. The fluid's reaction forces and torques,
+//    accumulated on its boundary particles during a step, plus gravity (and the
+//    tank's rotating-frame forces) move and spin it. Buoyancy and drag come out
+//    of that sum; nothing models them separately.
+// Orientation is a quaternion and angular quantities are 3-vectors in both 2D and
+// 3D; in 2D every torque points along z, so the body only ever turns about z.
 export interface Obstacle {
-  center: number[]
-  halfSize: number[]
-  angle: number
-  vel: number[]
-  omega: number // angular velocity
+  center: number[] // dim
+  halfSize: number[] // dim
+  q: Quat // orientation, body → world
+  vel: number[] // dim
+  omega: number[] // angular velocity, 3 components
   target: number[]
   grabbed: boolean
   local: Float32Array // boundary particle offsets in the body frame, stride dim
-  force: Float64Array // fluid force on the body, accumulated over one step
-  torque: number
+  force: Float64Array // fluid force on the body over one step (3 components)
+  torque: Float64Array // fluid torque about the centre over one step
+}
+
+// The obstacle's rotation angle about z (what a 2D view needs).
+export function obstacleAngle(o: Obstacle): number {
+  return 2 * Math.atan2(o.q[3], o.q[0])
 }
 
 // Brush input for one step.
@@ -173,7 +180,7 @@ function seedBlock(s: SimState, p: Params) {
 // One fixed-dt substep.
 export function step(s: SimState, p: Params, mouse?: MouseInput, frame?: FrameMotion) {
   if (s.boundaryH !== p.h) buildBoundary(s, p)
-  if (s.obstacle) advanceObstacle(s, p, s.obstacle)
+  if (s.obstacle) advanceObstacle(s, p, s.obstacle, frame)
   if (s.grid.cellSize !== p.h || s.grid.sorted.length !== s.n) s.grid = createGrid(p.domain, p.h, s.n, s.n)
   buildGrid(s.grid, s.pos, s.n)
   // Boundary particles follow the fluid in pos. Walls never move, so their grid
@@ -209,14 +216,14 @@ export function setObstacle(s: SimState, p: Params, rect: { center: number[]; si
     s.obstacle = {
       center,
       halfSize,
-      angle: 0,
+      q: [1, 0, 0, 0],
       vel: new Array(dim).fill(0),
-      omega: 0,
+      omega: [0, 0, 0],
       target: center.slice(),
       grabbed: false,
       local: new Float32Array(0),
-      force: new Float64Array(dim),
-      torque: 0,
+      force: new Float64Array(3),
+      torque: new Float64Array(3),
     }
   } else {
     s.obstacle = null
@@ -400,24 +407,28 @@ function clampCenter(c: number[], extent: number[], domain: Domain) {
   }
 }
 
-// Half-extents of the rotated rectangle's axis-aligned bounding box.
-function bodyExtent(o: Obstacle): number[] {
-  const c = Math.abs(Math.cos(o.angle))
-  const sn = Math.abs(Math.sin(o.angle))
-  return [c * o.halfSize[0] + sn * o.halfSize[1], sn * o.halfSize[0] + c * o.halfSize[1]]
+// Pads a dim-length vector (or slice of a strided array) to 3 components.
+function vec3(a: ArrayLike<number>, i: number, dim: number): number[] {
+  return [a[i], a[i + 1], dim === 3 ? a[i + 2] : 0]
 }
 
-// Body frame → world offset (rotation only). `inverse` maps world → body frame.
-function bodyPoint(o: Obstacle, x: number, y: number, inverse = false): [number, number] {
-  const c = Math.cos(o.angle)
-  const sn = inverse ? -Math.sin(o.angle) : Math.sin(o.angle)
-  return [c * x - sn * y, sn * x + c * y]
+// Half-extents of the rotated box's axis-aligned bounding box.
+function bodyExtent(o: Obstacle): number[] {
+  const dim = o.center.length
+  const ext = new Array<number>(dim).fill(0)
+  for (let k = 0; k < dim; k++) {
+    const axis = rotate(o.q, [k === 0 ? 1 : 0, k === 1 ? 1 : 0, k === 2 ? 1 : 0])
+    for (let d = 0; d < dim; d++) ext[d] += Math.abs(axis[d]) * o.halfSize[k]
+  }
+  return ext
 }
 
 // True if world point `pt` lies inside the obstacle.
 export function obstacleContains(o: Obstacle, pt: number[]): boolean {
-  const [lx, ly] = bodyPoint(o, pt[0] - o.center[0], pt[1] - o.center[1], true)
-  return Math.abs(lx) <= o.halfSize[0] && Math.abs(ly) <= o.halfSize[1]
+  const dim = o.center.length
+  const local = rotate(o.q, vec3(pt.map((v, d) => v - o.center[d]), 0, dim), true)
+  for (let d = 0; d < dim; d++) if (Math.abs(local[d]) > o.halfSize[d]) return false
+  return true
 }
 
 // Writes the obstacle's boundary particles from its pose: x = c + R·l and
@@ -427,21 +438,50 @@ function placeBody(s: SimState, o: Obstacle) {
   const first = s.n + s.nWall
   const count = o.local.length / dim
   for (let b = 0; b < count; b++) {
-    const [rx, ry] = bodyPoint(o, o.local[b * dim], o.local[b * dim + 1])
+    const r = rotate(o.q, vec3(o.local, b * dim, dim))
+    const w = cross(o.omega, r)
     const i = (first + b) * dim
-    s.pos[i] = o.center[0] + rx
-    s.pos[i + 1] = o.center[1] + ry
-    s.vel[i] = o.vel[0] - o.omega * ry
-    s.vel[i + 1] = o.vel[1] + o.omega * rx
+    for (let d = 0; d < dim; d++) {
+      s.pos[i + d] = o.center[d] + r[d]
+      s.vel[i + d] = o.vel[d] + w[d]
+    }
   }
+}
+
+// Adds force f (3 components) acting at boundary particle j to the body's force
+// and torque about its centre.
+function pushOnBody(o: Obstacle, pos: Float32Array, j: number, dim: number, fx: number, fy: number, fz: number) {
+  o.force[0] += fx
+  o.force[1] += fy
+  o.force[2] += fz
+  const rx = pos[j * dim] - o.center[0]
+  const ry = pos[j * dim + 1] - o.center[1]
+  const rz = dim === 3 ? pos[j * dim + 2] - o.center[2] : 0
+  o.torque[0] += ry * fz - rz * fy
+  o.torque[1] += rz * fx - rx * fz
+  o.torque[2] += rx * fy - ry * fx
+}
+
+// Principal moments of inertia of a uniform box (rectangle in 2D, where only the
+// z moment matters).
+function boxInertia(mass: number, halfSize: number[]): number[] {
+  const [a, b, c] = [2 * halfSize[0], 2 * halfSize[1], halfSize.length === 3 ? 2 * halfSize[2] : 0]
+  return [(mass * (b * b + c * c)) / 12, (mass * (a * a + c * c)) / 12, (mass * (a * a + b * b)) / 12]
+}
+
+// I_world⁻¹ · u, via the body frame where the inertia tensor is diagonal.
+function applyInverseInertia(o: Obstacle, inertia: number[], u: number[]): number[] {
+  const b = rotate(o.q, u, true)
+  return rotate(o.q, b.map((v, k) => (inertia[k] > 0 ? v / inertia[k] : 0)))
 }
 
 // Advances the obstacle one step, then re-places its boundary particles.
 // Kinematic: toward the target at most mouseSpeedCap · dt, no spin.
-// Dynamic: symplectic Euler on the fluid force accumulated in the previous step
-// (one step of lag, which is fine at this dt) plus gravity. Mass is
-// ρ_body · area, inertia that of a uniform rectangle.
-function advanceObstacle(s: SimState, p: Params, o: Obstacle) {
+// Dynamic: symplectic Euler on the fluid force and torque accumulated in the
+// previous step (one step of lag, fine at this dt), plus gravity and the tank's
+// rotating-frame forces at the centre. Rotation follows Euler's equations in the
+// body frame, I ω̇ = τ − ω × Iω; mass is ρ_body · volume.
+function advanceObstacle(s: SimState, p: Params, o: Obstacle, frame?: FrameMotion) {
   const dim = s.dim
   const dt = p.dt
   if (o.grabbed || !p.obstacleDynamic) {
@@ -455,31 +495,41 @@ function advanceObstacle(s: SimState, p: Params, o: Obstacle) {
       o.center[d] += move
       o.vel[d] = move / dt
     }
-    o.omega = 0
+    o.omega = [0, 0, 0]
   } else {
     const mass = obstacleMass(p, o.halfSize)
-    const inertia = (mass * ((2 * o.halfSize[0]) ** 2 + (2 * o.halfSize[1]) ** 2)) / 12
+    const inertia = boxInertia(mass, o.halfSize)
+    const acc = o.vel.map((_, d) => o.force[d] / mass + p.gravity[d])
+    if (frame) frameAccel(frame, o.center, o.vel, 0, dim, acc, 0)
     for (let d = 0; d < dim; d++) {
-      o.vel[d] += (o.force[d] / mass + p.gravity[d]) * dt
+      o.vel[d] += acc[d] * dt
       o.center[d] += o.vel[d] * dt
     }
-    o.omega += (o.torque / inertia) * dt
-    o.angle += o.omega * dt
+    const wb = rotate(o.q, o.omega, true)
+    const tb = rotate(o.q, Array.from(o.torque), true)
+    const Iw = wb.map((v, k) => inertia[k] * v)
+    const gyro = cross(wb, Iw)
+    const dwb = tb.map((v, k) => (inertia[k] > 0 ? (v - gyro[k]) / inertia[k] : 0))
+    const dw = rotate(o.q, dwb)
+    o.omega = o.omega.map((v, k) => v + dw[k] * dt)
+    const spin = Math.hypot(o.omega[0], o.omega[1], o.omega[2])
+    o.q = normalize(quatMultiply(quatFromAxisAngle(o.omega, spin * dt), o.q))
     collideBodyWithWalls(o, p, mass, inertia)
     for (let d = 0; d < dim; d++) o.target[d] = o.center[d]
   }
   placeBody(s, o)
   o.force.fill(0)
-  o.torque = 0
+  o.torque.fill(0)
 }
 
 const CONTACT_FRICTION = 0.5 // Coulomb μ between the body and the walls
 
-// Rigid-body contact between the rectangle's corners and the domain walls. Each
+// Rigid-body contact between the box's corners and the domain walls. Each
 // penetrating corner is pushed back out and gets a normal impulse (with
-// restitution) plus a Coulomb friction impulse, both applied at the corner, so
-// contact produces torque: a box landing on a corner topples flat instead of
-// balancing on it. Corners and walls are visited in a fixed order (determinism).
+// restitution) plus a Coulomb friction impulse along its sliding direction,
+// both applied at the corner through the full inertia tensor, so contact
+// produces torque: a box landing on a corner topples flat instead of balancing
+// on it. Corners and walls are visited in a fixed order (determinism).
 //
 // For the body, the walls are inset by one kernel radius h. Buoyancy is pressure
 // on the bottom face, and a body resting flush on the floor seals the fluid out
@@ -489,47 +539,50 @@ const CONTACT_FRICTION = 0.5 // Coulomb μ between the body and the walls
 // thanks to surface roughness. It is h rather than one spacing because a film
 // that thin holds only a layer or two of particles: they never reach rest density,
 // their pressure clamps to zero, and the seal effectively remains.
-function collideBodyWithWalls(o: Obstacle, p: Params, mass: number, inertia: number) {
+function collideBodyWithWalls(o: Obstacle, p: Params, mass: number, inertia: number[]) {
   const dim = o.center.length
   const min = p.domain.min.map((v) => v + p.h)
   const max = p.domain.max.map((v) => v - p.h)
-  for (const sx of [-1, 1]) {
-    for (const sy of [-1, 1]) {
-      for (let d = 0; d < dim; d++) {
-        for (const side of [-1, 1]) {
-          const [rx, ry] = bodyPoint(o, sx * o.halfSize[0], sy * o.halfSize[1])
-          const corner = o.center[d] + (d === 0 ? rx : ry)
-          const depth = side < 0 ? min[d] - corner : corner - max[d]
-          if (depth <= 0) continue
-          // Inward wall normal n and tangent t.
-          const nx = d === 0 ? -side : 0
-          const ny = d === 1 ? -side : 0
-          const tx = -ny
-          const ty = nx
-          o.center[d] -= side * depth
-          const vx = o.vel[0] - o.omega * ry
-          const vy = o.vel[1] + o.omega * rx
-          const vn = vx * nx + vy * ny
-          if (vn >= 0) continue
-          const rn = rx * ny - ry * nx
-          const jn = (-(1 + p.restitution) * vn) / (1 / mass + (rn * rn) / inertia)
-          const rt = rx * ty - ry * tx
-          const vt = vx * tx + vy * ty
-          let jt = -vt / (1 / mass + (rt * rt) / inertia)
-          const maxFriction = CONTACT_FRICTION * jn
-          jt = Math.max(-maxFriction, Math.min(maxFriction, jt))
-          o.vel[0] += (jn * nx + jt * tx) / mass
-          o.vel[1] += (jn * ny + jt * ty) / mass
-          o.omega += (jn * rn + jt * rt) / inertia
+  // Effective inverse mass along direction u for a push at offset r.
+  const effective = (r: number[], u: number[]) => {
+    const k = cross(applyInverseInertia(o, inertia, cross(r, u)), r)
+    return 1 / mass + u[0] * k[0] + u[1] * k[1] + u[2] * k[2]
+  }
+  for (let c = 0; c < 1 << dim; c++) {
+    const local = [0, 1, 2].map((k) => (k < dim ? ((c >> k) & 1 ? 1 : -1) * o.halfSize[k] : 0))
+    for (let d = 0; d < dim; d++) {
+      for (const side of [-1, 1]) {
+        const r = rotate(o.q, local)
+        const corner = o.center[d] + r[d]
+        const depth = side < 0 ? min[d] - corner : corner - max[d]
+        if (depth <= 0) continue
+        o.center[d] -= side * depth
+        const n = [0, 0, 0]
+        n[d] = -side // inward wall normal
+        const w = cross(o.omega, r)
+        const v = [0, 1, 2].map((k) => (k < dim ? o.vel[k] : 0) + w[k])
+        const vn = v[0] * n[0] + v[1] * n[1] + v[2] * n[2]
+        if (vn >= 0) continue
+        const jn = (-(1 + p.restitution) * vn) / effective(r, n)
+        const impulse = n.map((x) => x * jn)
+        const vt = v.map((x, k) => x - vn * n[k])
+        const vtLen = Math.hypot(vt[0], vt[1], vt[2])
+        if (vtLen > 1e-9) {
+          const t = vt.map((x) => x / vtLen)
+          const jt = Math.min(vtLen / effective(r, t), CONTACT_FRICTION * jn)
+          for (let k = 0; k < 3; k++) impulse[k] -= jt * t[k]
         }
+        for (let k = 0; k < dim; k++) o.vel[k] += impulse[k] / mass
+        const dw = applyInverseInertia(o, inertia, cross(r, impulse))
+        o.omega = o.omega.map((x, k) => x + dw[k])
       }
     }
   }
 }
 
 // Safety net like the wall clamp, and what clears the area when an obstacle is
-// placed. Works in the body frame: a fluid particle inside the outline (grown by
-// the particle radius) is mirrored across the nearest face, so particles at
+// placed. Works in the body frame: a fluid particle inside the box (grown by the
+// particle radius) is mirrored across the nearest face, so particles at
 // different depths don't land on the same spot, and its velocity into that face,
 // relative to the body's surface velocity there, is reflected with restitution.
 function pushOutOfObstacle(s: SimState, p: Params, o: Obstacle) {
@@ -537,8 +590,10 @@ function pushOutOfObstacle(s: SimState, p: Params, o: Obstacle) {
   const { n, pos, vel } = s
   const r = particleRadius(p)
   const e = p.restitution
+  const offset = [0, 0, 0]
   for (let i = 0; i < n; i++) {
-    const local = bodyPoint(o, pos[i * dim] - o.center[0], pos[i * dim + 1] - o.center[1], true)
+    for (let d = 0; d < dim; d++) offset[d] = pos[i * dim + d] - o.center[d]
+    const local = rotate(o.q, offset, true)
     let face = 0
     let depth = Infinity
     for (let d = 0; d < dim; d++) {
@@ -551,17 +606,13 @@ function pushOutOfObstacle(s: SimState, p: Params, o: Obstacle) {
     if (depth <= 0) continue
     const sign = local[face] >= 0 ? 1 : -1
     local[face] += sign * 2 * depth
-    const [rx, ry] = bodyPoint(o, local[0], local[1])
-    pos[i * dim] = o.center[0] + rx
-    pos[i * dim + 1] = o.center[1] + ry
-    const normal = bodyPoint(o, face === 0 ? sign : 0, face === 1 ? sign : 0)
-    const relX = vel[i * dim] - (o.vel[0] - o.omega * ry)
-    const relY = vel[i * dim + 1] - (o.vel[1] + o.omega * rx)
-    const vn = relX * normal[0] + relY * normal[1]
-    if (vn < 0) {
-      vel[i * dim] -= (1 + e) * vn * normal[0]
-      vel[i * dim + 1] -= (1 + e) * vn * normal[1]
-    }
+    const world = rotate(o.q, local)
+    for (let d = 0; d < dim; d++) pos[i * dim + d] = o.center[d] + world[d]
+    const normal = rotate(o.q, [face === 0 ? sign : 0, face === 1 ? sign : 0, face === 2 ? sign : 0])
+    const w = cross(o.omega, world)
+    let vn = 0
+    for (let d = 0; d < dim; d++) vn += (vel[i * dim + d] - o.vel[d] - w[d]) * normal[d]
+    if (vn < 0) for (let d = 0; d < dim; d++) vel[i * dim + d] -= (1 + e) * vn * normal[d]
   }
 }
 
@@ -652,11 +703,11 @@ function computeAccelerations(s: SimState, p: Params, k: Kernels, frame?: FrameM
       const scale = ((weight[j] * pressure[i]) / (rhoi * rhoi)) * grad
       for (let d = 0; d < dim; d++) acc[i * dim + d] += scale * (pos[i * dim + d] - pos[j * dim + d])
       if (o && j >= bodyStart) {
-        const fx = -mass * scale * (pos[i * dim] - pos[j * dim])
-        const fy = -mass * scale * (pos[i * dim + 1] - pos[j * dim + 1])
-        o.force[0] += fx
-        o.force[1] += fy
-        o.torque += (pos[j * dim] - o.center[0]) * fy - (pos[j * dim + 1] - o.center[1]) * fx
+        const f = -mass * scale
+        pushOnBody(o, pos, j, dim,
+          f * (pos[i * dim] - pos[j * dim]),
+          f * (pos[i * dim + 1] - pos[j * dim + 1]),
+          dim === 3 ? f * (pos[i * dim + 2] - pos[j * dim + 2]) : 0)
       }
     }
   }
@@ -768,11 +819,11 @@ function integrate(s: SimState, p: Params, k: Kernels) {
       // The obstacle drags fluid along (or holds it back); react that momentum
       // change onto the body as skin friction, so a current can carry it.
       if (o) {
-        const fx = (-mass * wi * (vel[j * dim] - vel[i * dim])) / dt
-        const fy = (-mass * wi * (vel[j * dim + 1] - vel[i * dim + 1])) / dt
-        o.force[0] += fx
-        o.force[1] += fy
-        o.torque += (pos[j * dim] - o.center[0]) * fy - (pos[j * dim + 1] - o.center[1]) * fx
+        const f = (-mass * wi) / dt
+        pushOnBody(o, pos, j, dim,
+          f * (vel[j * dim] - vel[i * dim]),
+          f * (vel[j * dim + 1] - vel[i * dim + 1]),
+          dim === 3 ? f * (vel[j * dim + 2] - vel[i * dim + 2]) : 0)
       }
     }
   }

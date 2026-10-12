@@ -22,6 +22,7 @@ export class Renderer3D {
   private readonly bounds: THREE.Box3Helper
   private readonly floor: THREE.GridHelper
   private readonly tank = new THREE.Group() // at the tank centre, rotated by its orientation
+  private readonly body: THREE.Mesh<THREE.BoxGeometry, THREE.MeshLambertMaterial>
   private readonly resizeObserver: ResizeObserver
   private readonly container: HTMLElement
 
@@ -53,7 +54,10 @@ export class Renderer3D {
     this.bounds = new THREE.Box3Helper(new THREE.Box3(new THREE.Vector3(x0, y0, z0), new THREE.Vector3(x1, y1, z1)), 0x5a6b80)
     const inner = new THREE.Group()
     inner.position.copy(center).negate()
-    inner.add(this.mesh, this.bounds)
+    // The floating body: a unit cube scaled to its half-sizes, posed in tank coordinates.
+    this.body = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.MeshLambertMaterial({ color: 0xf2c230 }))
+    this.body.visible = false
+    inner.add(this.mesh, this.bounds, this.body)
     this.tank.position.copy(center)
     this.tank.add(inner)
     this.scene.add(this.tank)
@@ -93,6 +97,15 @@ export class Renderer3D {
     this.mesh.instanceMatrix.needsUpdate = true
   }
 
+  // Shows the floating body (tank coordinates, quaternion [w, x, y, z]), or hides it.
+  setBody(center: number[] | null, halfSize: number[], q: number[]) {
+    this.body.visible = center !== null
+    if (!center) return
+    this.body.position.set(center[0], center[1], center[2])
+    this.body.scale.set(halfSize[0], halfSize[1], halfSize[2])
+    this.body.quaternion.set(q[1], q[2], q[3], q[0])
+  }
+
   // Tank orientation as a quaternion [w, x, y, z] (tank → world).
   setTankOrientation(q: number[]) {
     this.tank.quaternion.set(q[1], q[2], q[3], q[0])
@@ -128,6 +141,8 @@ export class Renderer3D {
     this.mesh.geometry.dispose()
     this.mesh.material.dispose()
     this.mesh.dispose()
+    this.body.geometry.dispose()
+    this.body.material.dispose()
     this.bounds.dispose()
     this.floor.dispose()
     this.gl.dispose()

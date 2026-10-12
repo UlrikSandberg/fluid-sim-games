@@ -79,7 +79,8 @@ export const defaultParams3D: Readonly<Params> = {
   // about 4 deep once they settle.
   domain: { min: [0, 0, 0], max: [16, 10, 8] },
   particleCount: 4000,
-  obstacleSize: [4, 2, 2],
+  obstacleSize: [4, 2, 3],
+  obstacleDynamic: true, // in 3D, bodies are dropped in and float
 }
 
 // Mass is derived, never tuned: m = ρ₀ · spacing^dim.
