@@ -7,7 +7,7 @@ import { GpuEngine } from '../fluid3d/engines'
 import {
   DEFAULT_CURRENT, START_X, bankLines, courseOf, finishX, riverBoxes, riverLayout, riverParams, riverScene,
 } from './riverScene'
-import { generateFeatures, raceSettings, randomizeCourse } from './features'
+import { features, generateFeatures, raceSettings, randomizeCourse, swirlOnDuck, waterAt } from './features'
 import type { SolidBox } from '../../sim/sph'
 
 export type RacePhase = 'idle' | 'countdown' | 'racing' | 'finished'
@@ -108,8 +108,16 @@ function startLine(count: number) {
   const water = riverLayout.ledgeHeight + riverLayout.upperDepth
   const y = water + size[1] / 2 + 0.3
   const zc = c.centerline(START_X)
-  const positions = Array.from({ length: count }, (_, i) => {
-    const offset = (i - (count - 1) / 2) * (size[2] + LANE_GAP)
+  // Lanes are dealt out at random each race: a fixed order hands the same ducks
+  // the same lanes every time, and the course's shape favours some lanes (two
+  // races in a row finished in identical order before this).
+  const lanes = Array.from({ length: count }, (_, i) => i)
+  for (let i = count - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[lanes[i], lanes[j]] = [lanes[j], lanes[i]]
+  }
+  const positions = lanes.map((lane) => {
+    const offset = (lane - (count - 1) / 2) * (size[2] + LANE_GAP)
     return [START_X + offset * across[0], y, zc + offset * across[1]]
   })
   const reach = c.halfWidth + 0.5
@@ -252,6 +260,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       engine = created
       const solids = riverBoxes(riverLayout)
       engine.constrainBody = (o) => {
+        if (!o.grabbed) swirlOnDuck(o.center, o.vel, raceParams.dt)
         bankConstraint(o)
         solidConstraint(o, solids)
       }
@@ -264,6 +273,8 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         renderer.addSolid([box.min[0], box.min[1], box.min[2] + 0.02], [box.max[0], box.max[1], box.max[2] - 0.02])
       }
       renderer.setFinish(finishLine())
+      // Half a unit over the resting level: the flowing water stands a little higher.
+      renderer.setSwirls(features.swirls.map((w) => ({ ...w, y: waterAt(riverLayout, w.x) + 0.5 })))
       const [left, right] = bankLines(riverLayout)
       // Banks follow the water: just above the upper reach, stepping down at the
       // waterfall to just above the lower reach (the physical banks go to the top).

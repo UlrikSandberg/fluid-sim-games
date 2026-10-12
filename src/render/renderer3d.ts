@@ -42,6 +42,38 @@ function makeDuck(half: number[], color: number): THREE.Group {
   return duck
 }
 
+// A white three-armed spiral fading toward the rim, for whirlpool discs.
+function spiralTexture(): THREE.CanvasTexture {
+  const size = 256
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const g = canvas.getContext('2d')!
+  g.translate(size / 2, size / 2)
+  g.lineCap = 'round'
+  for (let arm = 0; arm < 3; arm++) {
+    g.beginPath()
+    for (let t = 0; t <= 1; t += 0.01) {
+      const angle = arm * ((2 * Math.PI) / 3) + t * 2.6 * Math.PI
+      const r = t * (size / 2 - 6)
+      if (t === 0) g.moveTo(r * Math.cos(angle), r * Math.sin(angle))
+      else g.lineTo(r * Math.cos(angle), r * Math.sin(angle))
+    }
+    g.strokeStyle = 'rgba(255, 255, 255, 0.85)'
+    g.lineWidth = 7
+    g.stroke()
+  }
+  const fade = g.createRadialGradient(0, 0, size * 0.3, 0, 0, size / 2)
+  fade.addColorStop(0, 'rgba(0, 0, 0, 0)')
+  fade.addColorStop(1, 'rgba(0, 0, 0, 1)')
+  g.globalCompositeOperation = 'destination-out'
+  g.fillStyle = fade
+  g.fillRect(-size / 2, -size / 2, size, size)
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
+}
+
 function disposeDuck(duck: THREE.Group) {
   duck.traverse((child) => {
     if (child instanceof THREE.Mesh) {
@@ -76,6 +108,9 @@ export class Renderer3D {
   private readonly ground = new THREE.MeshLambertMaterial({ color: 0x3f5a3a, side: THREE.DoubleSide })
   private readonly banks: THREE.Mesh<THREE.BufferGeometry, THREE.MeshLambertMaterial>[] = []
   private readonly ducks: THREE.Group[] = []
+  private readonly swirlDiscs: { mesh: THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>; strength: number }[] = []
+  private swirlTexture: THREE.CanvasTexture | null = null
+  private lastFrame = performance.now()
   private readonly wood = new THREE.MeshLambertMaterial({ color: 0x8a5a2b })
   private gate: THREE.Group | null = null
   private finish: THREE.Group | null = null
@@ -300,6 +335,29 @@ export class Renderer3D {
     this.finish = finish
   }
 
+  // Shows whirlpools as spinning spiral discs lying on the water (tank
+  // coordinates; y is the water surface), replacing any previous ones.
+  setSwirls(swirls: { x: number; y: number; z: number; radius: number; strength: number }[]) {
+    for (const d of this.swirlDiscs) {
+      d.mesh.removeFromParent()
+      d.mesh.geometry.dispose()
+      d.mesh.material.dispose()
+    }
+    this.swirlDiscs.length = 0
+    if (swirls.length === 0) return
+    this.swirlTexture ??= spiralTexture()
+    for (const w of swirls) {
+      const material = new THREE.MeshBasicMaterial({
+        map: this.swirlTexture, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide,
+      })
+      const mesh = new THREE.Mesh(new THREE.CircleGeometry(w.radius, 48), material)
+      mesh.rotation.x = -Math.PI / 2
+      mesh.position.set(w.x, w.y, w.z)
+      this.body.parent!.add(mesh)
+      this.swirlDiscs.push({ mesh, strength: w.strength })
+    }
+  }
+
   // Glides the camera after a point (tank coordinates; the race tank is unrotated)
   // keeping the current viewing angle, or stops following with null.
   follow(point: number[] | null) {
@@ -325,6 +383,12 @@ export class Renderer3D {
 
   // `water`: draw the fluid as a shaded surface (see waterSurface3d.ts) instead of spheres.
   render(water: boolean) {
+    const now = performance.now()
+    const dt = Math.min((now - this.lastFrame) / 1000, 0.1)
+    this.lastFrame = now
+    // Spin the swirl discs with their swirls. The disc is laid flat by −90° about x,
+    // so its local z turns the opposite way to the water's rotation about +y.
+    for (const d of this.swirlDiscs) d.mesh.rotation.z -= d.strength * 0.15 * dt
     if (this.following) {
       // Move the orbit target (and the camera with it) a little toward the goal each frame.
       const step = this.followGoal.clone().sub(this.controls.target).multiplyScalar(0.04)
@@ -359,6 +423,8 @@ export class Renderer3D {
     for (const d of this.ducks) disposeDuck(d)
     this.setGate(null)
     this.setFinish(null)
+    this.setSwirls([])
+    this.swirlTexture?.dispose()
     this.wood.dispose()
     this.checker.map?.dispose()
     this.checker.dispose()

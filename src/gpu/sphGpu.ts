@@ -4,7 +4,7 @@ import { makeKernels } from '../sim/kernels'
 import { buildGrid, createGrid } from '../sim/spatialHash'
 import { createState, type FrameMotion, type Obstacle, type SolidBox } from '../sim/sph'
 import { rotate } from '../sim/quat'
-import { BODY_VEC4S, MAX_BODIES, MAX_BOXES, PARAMS_VEC4S, WORKGROUP, sphWgsl } from './sphShaders'
+import { BODY_SLOT, BODY_VEC4S, BOX_SLOT, MAX_BODIES, MAX_BOXES, MAX_SWIRLS, PARAMS_VEC4S, SWIRL_SLOT, WORKGROUP, sphWgsl } from './sphShaders'
 
 // The 3D SPH solver on the GPU (WebGPU compute). It runs a GpuScene: initial
 // fluid positions and static boundary particles (built by the CPU code, so the
@@ -41,6 +41,8 @@ export interface GpuScene {
   // A winding channel along x: centreline z = centerZ + amplitude·sin(wavenumber·x),
   // fluid kept within halfWidth of it (the banks' boundary particles go in `boundary`).
   channel?: { amplitude: number; wavenumber: number; halfWidth: number; centerZ: number }
+  // Whirlpools (up to MAX_SWIRLS): centre (x, z), radius, peak speed (sign = direction).
+  swirls?: { x: number; z: number; radius: number; strength: number }[]
 }
 
 // The sandbox tank: createState's dam-break block and wall boundary.
@@ -91,6 +93,7 @@ export class GpuSph {
   private readonly boxes: SolidBox[]
   private readonly recycle: GpuScene['recycle']
   private readonly channel: GpuScene['channel']
+  private readonly swirls: NonNullable<GpuScene['swirls']>
   // Live-adjustable river current (speed 0, rate 0 = none).
   readonly current: { speed: number; rate: number }
 
@@ -103,6 +106,7 @@ export class GpuSph {
     this.boxes = scene.boxes ?? []
     this.recycle = scene.recycle
     this.channel = scene.channel
+    this.swirls = (scene.swirls ?? []).slice(0, MAX_SWIRLS)
     this.current = { ...(scene.current ?? { speed: 0, rate: 0 }) }
 
     // Static boundary particles, cell-sorted on the same grid layout the GPU uses.
@@ -291,11 +295,13 @@ export class GpuSph {
     const ch = this.channel
     set(16, ch ? [ch.amplitude, ch.wavenumber, ch.halfWidth, 1] : [0, 0, 0, 0])
     set(17, ch ? [ch.centerZ, 0, 0, 0] : [0, 0, 0, 0])
+    set(SWIRL_SLOT, [this.swirls.length, 0, 0, 0], true)
+    this.swirls.forEach((w, i) => set(SWIRL_SLOT + 1 + i, [w.x, w.z, w.radius, w.strength]))
     this.boxes.forEach((box, b) => {
-      set(18 + 2 * b, [...box.min, 0])
-      set(19 + 2 * b, [...box.max, 0])
+      set(BOX_SLOT + 2 * b, [...box.min, 0])
+      set(BOX_SLOT + 1 + 2 * b, [...box.max, 0])
     })
-    const bodySlot = 18 + 2 * MAX_BOXES
+    const bodySlot = BODY_SLOT
     for (let b = 0; b < nBodies; b++) {
       const o = bodies[b]
       const base = bodySlot + b * BODY_VEC4S

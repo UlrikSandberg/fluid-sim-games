@@ -16,8 +16,15 @@ export const SCAN_THREADS = 256
 // Field order must match GpuSph.writeParams.
 export const MAX_BOXES = 8 // the ledge plus rocks
 export const MAX_BODIES = 8
+export const MAX_SWIRLS = 4
 export const BODY_VEC4S = 10 // per Body struct
-export const PARAMS_VEC4S = 18 + 2 * MAX_BOXES + BODY_VEC4S * MAX_BODIES
+// Slots: 18 fixed vec4s, swirl count, swirls, boxes, bodies (see GpuSph.writeParams).
+export const SWIRL_SLOT = 18
+export const BOX_SLOT = SWIRL_SLOT + 1 + MAX_SWIRLS
+export const BODY_SLOT = BOX_SLOT + 2 * MAX_BOXES
+export const PARAMS_VEC4S = BODY_SLOT + BODY_VEC4S * MAX_BODIES
+// How fast (1/s) water inside a swirl turns toward the swirl's rotation.
+export const SWIRL_RATE = 3
 
 export const sphWgsl = /* wgsl */ `
 // A rigid body (a box) the fluid pushes and is pushed by.
@@ -53,6 +60,8 @@ struct Params {
   boxCount: vec4u,   // static solid boxes in use
   channel: vec4f,    // winding channel: amplitude, wavenumber, half width, enabled (0/1)
   channel2: vec4f,   // centreline z at amplitude 0, 0, 0, 0
+  swirlCount: vec4u,
+  swirls: array<vec4f, ${MAX_SWIRLS}>, // whirlpools: centre x, centre z, radius, peak speed (sign = direction)
   boxes: array<vec4f, ${2 * MAX_BOXES}>, // min, max per box (static, solid)
   bodies: array<Body, ${MAX_BODIES}>,
 }
@@ -294,6 +303,20 @@ fn accel(@builtin(global_invocation_id) gid: vec3u) {
   // (stands in for the slope plus bed friction of a real river).
   let t = downstream(xi);
   a += P.current.y * (P.current.x - dot(vi, t)) * t;
+  // Whirlpools: turn the horizontal velocity toward a rotation about the swirl's
+  // centre (0 at the centre and rim, fastest at mid radius), with a gentle inward pull.
+  for (var w = 0u; w < P.swirlCount.x; w++) {
+    let sw = P.swirls[w];
+    let rel = vec3f(xi.x - sw.x, 0.0, xi.z - sw.y);
+    let dist = length(rel);
+    if (dist < sw.z && dist > 1e-3) {
+      let around = vec3f(-rel.z, 0.0, rel.x) / dist;
+      let u = dist / sw.z;
+      let spin = sw.w * 4.0 * u * (1.0 - u);
+      a += ${SWIRL_RATE.toFixed(1)} * (spin - dot(vi, around)) * around;
+      a -= (rel / dist) * abs(sw.w) * 0.4 * (1.0 - u);
+    }
+  }
   var range: vec2u;
   for (var dz = -1; dz <= 1; dz++) {
     for (var dy = -1; dy <= 1; dy++) {

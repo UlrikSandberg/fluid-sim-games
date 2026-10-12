@@ -83,5 +83,37 @@ export function generateFeatures(l: RiverLayout) {
     features.rocks.push({ min: [x - sx / 2, bedAt(l, x), z - sz / 2], max: [x + sx / 2, waterAt(l, x) + 1.2, z + sz / 2] })
   }
   features.swirls = []
+  for (let tries = 0; tries < 200 && features.swirls.length < raceSettings.swirls; tries++) {
+    const x = freeX(l, 6)
+    if (x == null) break
+    const radius = Math.min(rand(2.5, 4), c.halfWidth - 0.5)
+    const z = c.centerline(x) + rand(-1, 1) * Math.max(0, c.halfWidth - radius)
+    const clear =
+      features.rocks.every((r) => Math.hypot((r.min[0] + r.max[0]) / 2 - x, (r.min[2] + r.max[2]) / 2 - z) > radius + 1.5) &&
+      features.swirls.every((w) => Math.hypot(w.x - x, w.z - z) > w.radius + radius)
+    if (!clear) continue
+    features.swirls.push({ x, z, radius, strength: (Math.random() < 0.5 ? -1 : 1) * rand(4, 7) })
+  }
   features.pickups = []
+}
+
+// How fast (1/s) a duck inside a swirl turns toward the swirl's rotation: slower
+// than the water (SWIRL_RATE in the shader), it's also carried by the water.
+const DUCK_SWIRL_RATE = 1.2
+
+// The swirls' direct pull on a duck for one step of `dt` (the same profile as the
+// water's, see sphShaders.ts), so a duck caught in one visibly circles.
+export function swirlOnDuck(center: number[], vel: number[], dt: number) {
+  for (const w of features.swirls) {
+    const rx = center[0] - w.x
+    const rz = center[2] - w.z
+    const dist = Math.hypot(rx, rz)
+    if (dist >= w.radius || dist < 1e-3) continue
+    const around = [-rz / dist, rx / dist]
+    const u = dist / w.radius
+    const spin = w.strength * 4 * u * (1 - u)
+    const along = vel[0] * around[0] + vel[2] * around[1]
+    vel[0] += DUCK_SWIRL_RATE * (spin - along) * around[0] * dt
+    vel[2] += DUCK_SWIRL_RATE * (spin - along) * around[1] * dt
+  }
 }

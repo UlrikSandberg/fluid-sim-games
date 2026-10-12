@@ -210,6 +210,8 @@ function RacePanel({ controller, paused, onTogglePause, colorMode, onColorMode, 
         </p>
         <Slider label="Rocks" value={raceSettings.rocks} min={0} max={6} step={1} format={(v) => v.toFixed(0)}
           onChange={(v) => update(() => (raceSettings.rocks = v))} />
+        <Slider label="Swirls" value={raceSettings.swirls} min={0} max={4} step={1} format={(v) => v.toFixed(0)}
+          onChange={(v) => update(() => (raceSettings.swirls = v))} />
       </Section>
 
       <Section title="Course (on reset)">

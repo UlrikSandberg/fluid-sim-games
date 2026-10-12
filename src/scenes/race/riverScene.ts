@@ -165,6 +165,7 @@ export function riverScene(p: Params, l: RiverLayout = riverLayout): GpuScene {
     current: { ...DEFAULT_CURRENT },
     recycle: { exitX: l.length - EXIT_MARGIN, inletX: particleRadius(p) * 2, lift: l.ledgeHeight },
     channel: { amplitude: c.amplitude, wavenumber: c.wavenumber, halfWidth: c.halfWidth, centerZ: c.centerZ },
+    swirls: features.swirls,
   }
 }
 

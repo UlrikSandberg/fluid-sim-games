@@ -10,7 +10,7 @@ randomness that makes every race different.
   waterfall lip and the finish, leaving a passage. Water flows around them (static
   boundary + push-out, as the ledge); ducks bounce off them (a CPU-side constraint,
   since the rigid bodies don't otherwise know about solids).
-- [ ] **3. Swirls.** Random whirlpools: a rotating current around a point that can trap
+- [x] **3. Swirls.** Random whirlpools: a rotating current around a point that can trap
   a duck or fling it ahead. Shader-side (like the current), with a visible ring on
   the water.
 - [ ] **4. Power-ups.** Floating pickups along the course; the first duck to touch one
@@ -20,5 +20,7 @@ randomness that makes every race different.
   - **Boost:** a kick downstream.
   - **Zero-G:** gravity switches off for 2 seconds for everything (water and ducks
     float up), then everything splashes down.
+- [x] **Lanes shuffled each race.** Found while testing swirls: two races in a row
+  finished in the same order, because each duck always started in the same lane.
 - [ ] **5. Event feed.** "Alex grabbed Zero-G!" messages on screen, so you can see why
   the race just changed.
