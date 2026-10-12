@@ -61,6 +61,40 @@ export interface MouseInput {
   arrow: number[] // 'current' only: the drawn vector from `pos`, world units
 }
 
+// Motion of the simulation's frame (the tank) for one step. The solver works in
+// tank coordinates; when the tank rotates, every particle feels the inertial
+// forces of a rotating frame:
+//   a = −α × r − ω × (ω × r) − 2 ω × v     (Euler, centrifugal, Coriolis)
+// with r measured from `pivot`. For a rigid tank this is exactly equivalent to
+// moving its walls through the water, without regenerating any boundary
+// particles. Gravity in tank coordinates is the caller's job (p.gravity).
+// Vectors have 3 components (in 2D only z is used); `pivot` has dim.
+export interface FrameMotion {
+  omega: number[] // angular velocity, tank coordinates
+  alpha: number[] // angular acceleration, tank coordinates
+  pivot: number[]
+}
+
+// Adds the rotating-frame acceleration at position x (offset by pivot) moving
+// with velocity v (both stride dim, at index i) to out[o..o+dim).
+function frameAccel(f: FrameMotion, x: ArrayLike<number>, v: ArrayLike<number>, i: number, dim: number, out: Float32Array | number[], o: number) {
+  const rx = x[i] - f.pivot[0]
+  const ry = x[i + 1] - f.pivot[1]
+  const rz = dim === 3 ? x[i + 2] - f.pivot[2] : 0
+  const vx = v[i]
+  const vy = v[i + 1]
+  const vz = dim === 3 ? v[i + 2] : 0
+  const [wx, wy, wz] = f.omega
+  const [ax, ay, az] = f.alpha
+  // ω × r, then ω × (ω × r)
+  const cx = wy * rz - wz * ry
+  const cy = wz * rx - wx * rz
+  const cz = wx * ry - wy * rx
+  out[o] += -(ay * rz - az * ry) - (wy * cz - wz * cy) - 2 * (wy * vz - wz * vy)
+  out[o + 1] += -(az * rx - ax * rz) - (wz * cx - wx * cz) - 2 * (wz * vx - wx * vz)
+  if (dim === 3) out[o + 2] += -(ax * ry - ay * rx) - (wx * cy - wy * cx) - 2 * (wx * vy - wy * vx)
+}
+
 export function createState(p: Params): SimState {
   const dim = dimOf(p)
   const n = Math.min(p.particleCount, blockCapacity(p))
@@ -137,7 +171,7 @@ function seedBlock(s: SimState, p: Params) {
 }
 
 // One fixed-dt substep.
-export function step(s: SimState, p: Params, mouse?: MouseInput) {
+export function step(s: SimState, p: Params, mouse?: MouseInput, frame?: FrameMotion) {
   if (s.boundaryH !== p.h) buildBoundary(s, p)
   if (s.obstacle) advanceObstacle(s, p, s.obstacle)
   if (s.grid.cellSize !== p.h || s.grid.sorted.length !== s.n) s.grid = createGrid(p.domain, p.h, s.n, s.n)
@@ -153,7 +187,7 @@ export function step(s: SimState, p: Params, mouse?: MouseInput) {
 
   const k = makeKernels(p.h, s.dim)
   computeDensityPressure(s, p, k)
-  computeAccelerations(s, p, k)
+  computeAccelerations(s, p, k, frame)
   if (mouse?.active) {
     if (mouse.kind === 'current') applyCurrent(s, p, mouse)
     else applyMouse(s, p, mouse)
@@ -585,15 +619,16 @@ function equationOfState(rho: number, p: Params): number {
 // Boundary neighbours b mirror i's pressure (p_b = p_i, ρ_b = ρ_i): −ψ_b p_i/ρ_i² ∇W.
 // Each boundary push on fluid i from an obstacle particle b is reacted onto the
 // body (−m_i a_ib at x_b), which is where buoyancy and form drag come from.
-function computeAccelerations(s: SimState, p: Params, k: Kernels) {
+function computeAccelerations(s: SimState, p: Params, k: Kernels, frame?: FrameMotion) {
   const dim = s.dim
-  const { n, pos, acc, mass, weight, density, pressure } = s
+  const { n, pos, vel, acc, mass, weight, density, pressure } = s
   const { pairI, pairJ, pairR2, pairCount } = s.grid
   const o = s.obstacle
   const bodyStart = n + s.nWall
 
   for (let i = 0; i < n; i++) {
     for (let d = 0; d < dim; d++) acc[i * dim + d] = p.gravity[d]
+    if (frame) frameAccel(frame, pos, vel, i * dim, dim, acc, i * dim)
   }
 
   for (let q = 0; q < pairCount; q++) {

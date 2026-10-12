@@ -48,14 +48,28 @@ those changes are pending.
 ## 3D Fluid scene
 
 Drag to orbit, right-drag to pan, wheel to zoom; `1`–`5` colour modes, Space pauses.
+**Rotate the tank** to slosh the water: switch the drag mode with `T` (or the panel),
+or Shift+drag in orbit mode; `L` levels it again. Drag right rolls the tank clockwise
+as you see it; drag down tips its top toward you.
+
+The water isn't pushed by moving walls: the solver works in tank coordinates, where
+gravity rotates with the tilt and every particle feels the rotating frame's inertial
+forces (Euler −α×r, centrifugal −ω×(ω×r), Coriolis −2ω×v). For a rigid tank that is
+exact, and it needs no boundary regeneration. The tank chases your drag with spin
+capped at 2 rad/s and spin-up at 8 rad/s² (`src/sim/tankMotion.ts`), so even a wild
+swoosh moves the walls through the water at about Mach 0.2 at most. `npm run test:3d`
+checks it against two exact answers: a tank tilted 20° settles with a world-level
+surface (spread 0.16), and one spinning at 0.8 rad/s forms Newton's paraboloid
+(curvature 0.0329 vs ω²/2g = 0.0327). Ten seconds of swooshing stays bounded and
+resettles.
 The preset (`defaultParams3D`) uses spacing 0.5·h, which gives ~32 neighbours in 3D,
 the usual 30–40 target (2D's 0.4·h would give ~64). A 3D step costs ~0.9 µs per
 particle on one CPU thread, so the default of 4000 particles in a 16×10×8 tank is
 what fits 60 fps. `npm run test:3d` checks the 3D kernel constants, settling
 (bulk ρ/ρ₀ 1.006), neighbours (median 32), the domain and determinism.
 
-Not in 3D yet: mouse forces (need ray picking into the tank), floating bodies (the
-rigid body uses a single rotation angle), the water surface renderer (3D screen-space
+Not in 3D yet: floating bodies (the rigid body uses a single rotation angle),
+resizing the tank, the water surface renderer (3D screen-space
 fluid needs depth smoothing), and enough speed for river-sized particle counts (Web
 Workers / WebGPU, or Position Based Fluids for bigger timesteps).
 

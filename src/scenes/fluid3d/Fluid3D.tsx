@@ -5,7 +5,7 @@ import { colorModes, getColorMode, type ColorModeId } from '../../render/colorMo
 import { Hud } from '../../ui/Hud'
 import { Legend } from '../../ui/Legend'
 import { Section, Slider } from '../../ui/controls'
-import { params3d, startLoop3D, view3d, type SimController3D } from './loop'
+import { params3d, startLoop3D, tankGravity, view3d, type DragMode, type SimController3D } from './loop'
 
 // The 3D fluid scene: the shared solver with a 3D domain, an orbit camera and
 // lit spheres. No mouse forces yet (the mouse drives the camera); that needs ray
@@ -16,6 +16,7 @@ export function Fluid3D() {
   const controllerRef = useRef<SimController3D | null>(null)
   const [colorMode, setColorMode] = useState<ColorModeId>(view3d.colorMode)
   const [paused, setPaused] = useState(false)
+  const [dragMode, setDragMode] = useState<DragMode>(view3d.drag)
 
   useEffect(() => {
     const host = canvasHostRef.current
@@ -26,7 +27,8 @@ export function Fluid3D() {
           `${s.fps.toFixed(0)} fps · ${s.particles} particles · ` +
           (s.paused ? 'paused' : `${s.substeps.toFixed(1)} substeps/frame · ${s.stepMs.toFixed(2)} ms/substep`) +
           `\nρ/ρ₀ avg ${s.densityAvg.toFixed(3)} · neighbours avg ${s.neighborsAvg.toFixed(1)}` +
-          `\ndrag: orbit · right-drag: pan · wheel: zoom`
+          `\n${view3d.drag === 'tank' ? 'drag: rotate tank' : 'drag: orbit · shift-drag: rotate tank'} · right-drag: pan · wheel: zoom` +
+          `\nT: toggle drag mode · L: level tank`
       }
     })
     controllerRef.current = controller
@@ -40,18 +42,25 @@ export function Fluid3D() {
     view3d.colorMode = id
     setColorMode(id)
   }
+  const changeDragMode = (mode: DragMode) => {
+    view3d.drag = mode
+    setDragMode(mode)
+  }
   const togglePause = () => {
     controllerRef.current?.setPaused(!paused)
     setPaused(!paused)
   }
 
-  // Number keys pick the colour mode, Space pauses (ignored while a control has focus).
+  // Number keys pick the colour mode, T toggles the drag mode, L levels the tank,
+  // Space pauses (all ignored while a control has focus).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
       if (target.closest('input, select, textarea, button') || e.metaKey || e.ctrlKey || e.altKey) return
       const mode = colorModes[Number(e.key) - 1]
       if (mode) changeColorMode(mode.id)
+      else if (e.code === 'KeyT') changeDragMode(dragMode === 'tank' ? 'orbit' : 'tank')
+      else if (e.code === 'KeyL') controllerRef.current?.levelTank()
       else if (e.code === 'Space') {
         e.preventDefault()
         togglePause()
@@ -63,7 +72,7 @@ export function Fluid3D() {
 
   return (
     <div className="app">
-      <div ref={canvasHostRef} className="canvas-host canvas-3d" />
+      <div ref={canvasHostRef} className={`canvas-host canvas-3d ${dragMode === 'tank' ? 'drag-tank' : ''}`} />
       <Hud ref={hudRef} />
       <div className="side">
         <Legend mode={getColorMode(colorMode)} dim={3} />
@@ -73,6 +82,8 @@ export function Fluid3D() {
           onColorMode={changeColorMode}
           paused={paused}
           onTogglePause={togglePause}
+          dragMode={dragMode}
+          onDragMode={changeDragMode}
         />
       </div>
     </div>
@@ -85,10 +96,12 @@ interface PanelProps {
   onColorMode: (id: ColorModeId) => void
   paused: boolean
   onTogglePause: () => void
+  dragMode: DragMode
+  onDragMode: (mode: DragMode) => void
 }
 
 // Writes straight into params3d; the loop picks changes up on its next step.
-function Panel3D({ controller, colorMode, onColorMode, paused, onTogglePause }: PanelProps) {
+function Panel3D({ controller, colorMode, onColorMode, paused, onTogglePause, dragMode, onDragMode }: PanelProps) {
   const [, rerender] = useReducer((x: number) => x + 1, 0)
   const [appliedCount, setAppliedCount] = useState(params3d.particleCount)
   const update = (fn: () => void) => {
@@ -115,6 +128,24 @@ function Panel3D({ controller, colorMode, onColorMode, paused, onTogglePause }: 
         </button>
       </div>
 
+      <Section title="Tank">
+        <div className="row">
+          <span>Drag</span>
+          <div className="toggle" role="radiogroup" title="T toggles">
+            {(['orbit', 'tank'] as const).map((m) => (
+              <button key={m} role="radio" aria-checked={dragMode === m}
+                className={dragMode === m ? 'on current' : undefined} onClick={() => onDragMode(m)}>
+                {m === 'orbit' ? 'Orbit' : 'Rotate tank'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="note">shift-drag rotates the tank in either mode</p>
+        <button className="wide" onClick={() => controller()?.levelTank()} title="L">
+          Level tank
+        </button>
+      </Section>
+
       <Section title="View">
         <label className="row">
           <span>Colour</span>
@@ -133,8 +164,8 @@ function Panel3D({ controller, colorMode, onColorMode, paused, onTogglePause }: 
           onChange={(v) => update(() => (params3d.stiffness = Math.round(v)))} />
         <Slider label="XSPH ε" value={params3d.viscosityEps} min={0} max={0.5} step={0.01} format={(v) => v.toFixed(2)}
           onChange={(v) => update(() => (params3d.viscosityEps = v))} />
-        <Slider label="Gravity" value={-params3d.gravity[1]} min={0} max={20} step={0.1} format={(v) => v.toFixed(1)}
-          onChange={(v) => update(() => (params3d.gravity[1] = -v))} />
+        <Slider label="Gravity" value={tankGravity.value} min={0} max={20} step={0.1} format={(v) => v.toFixed(1)}
+          onChange={(v) => update(() => (tankGravity.value = v))} />
         <Slider label="dt" value={params3d.dt} min={0.0005} max={0.008} step={0.0005} format={(v) => v.toFixed(4)}
           onChange={(v) => update(() => (params3d.dt = v))} />
         <p className={params3d.dt > dtLimit ? 'note warn' : 'note'}>
@@ -154,7 +185,10 @@ function Panel3D({ controller, colorMode, onColorMode, paused, onTogglePause }: 
       </Section>
 
       <button className="wide"
-        onClick={() => update(() => Object.assign(params3d, structuredClone(defaultParams3D)))}>
+        onClick={() => update(() => {
+          Object.assign(params3d, structuredClone(defaultParams3D))
+          tankGravity.value = -defaultParams3D.gravity[1]
+        })}>
         Restore defaults
       </button>
     </details>

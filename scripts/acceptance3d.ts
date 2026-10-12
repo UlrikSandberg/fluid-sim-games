@@ -4,10 +4,17 @@
 //   2. A dam break settles with bulk ρ/ρ₀ within ±5% and ~30–40 neighbours.
 //   3. No particle ever leaves the domain.
 //   4. Determinism: two runs from the same seed give bit-identical positions.
+//   5. Tank tilted 20° (gravity rotated in tank coordinates): the surface settles
+//      level in the world, not level with the tank.
+//   6. Tank spinning about the vertical at ω (rotating-frame forces): the surface
+//      settles into Newton's paraboloid, curvature ω²/2g.
+//   7. Swooshing: the tank chases a target tumbling faster than its spin cap for
+//      10 s. Nothing diverges or escapes, and once levelled the water resettles.
 import { createHash } from 'node:crypto'
+import { advanceTank, createTankMotion, levelTarget, nudgeTarget } from '../src/sim/tankMotion.ts'
 import { defaultParams3D, dimOf, type Params } from '../src/sim/params.ts'
 import { makeKernels, poly6 } from '../src/sim/kernels.ts'
-import { createState, step, type SimState } from '../src/sim/sph.ts'
+import { createState, step, type FrameMotion, type SimState } from '../src/sim/sph.ts'
 
 const p: Params = structuredClone(defaultParams3D)
 const DIM = dimOf(p)
@@ -83,5 +90,126 @@ const hash = () => {
 const a = hash()
 const b = hash()
 check('deterministic (500 steps, two runs)', a === b, a.slice(0, 16))
+
+const g = 9.8
+const pivot = p.domain.min.map((v, d) => (v + p.domain.max[d]) / 2)
+
+// 5. Static tilt about z: world up is u = −ĝ, and e ⊥ ĝ runs across the tilted
+// surface. Top particle per 1-wide band of e, away from the walls.
+{
+  const th = (20 * Math.PI) / 180
+  const tilted: Params = { ...structuredClone(p), gravity: [-g * Math.sin(th), -g * Math.cos(th), 0] }
+  const t = createState(tilted)
+  for (let k = 0; k < 20 / p.dt; k++) step(t, tilted)
+  const across = (i: number) => Math.cos(th) * t.pos[i * 3] - Math.sin(th) * t.pos[i * 3 + 1]
+  const up = (i: number) => Math.sin(th) * t.pos[i * 3] + Math.cos(th) * t.pos[i * 3 + 1]
+  let lo = Infinity
+  let hi = -Infinity
+  for (let i = 0; i < t.n; i++) {
+    lo = Math.min(lo, across(i))
+    hi = Math.max(hi, across(i))
+  }
+  const tops = new Map<number, number>()
+  for (let i = 0; i < t.n; i++) {
+    const w = across(i)
+    if (w < lo + 1.5 || w > hi - 1.5) continue
+    tops.set(Math.floor(w), Math.max(tops.get(Math.floor(w)) ?? -Infinity, up(i)))
+  }
+  const heights = [...tops.values()]
+  const spread = Math.max(...heights) - Math.min(...heights)
+  const wrong = (p.domain.max[0] - p.domain.min[0]) * Math.sin(th)
+  check('tilted tank: surface level in the world', spread <= 2 * p.spacing,
+    `world-height spread ${spread.toFixed(2)} (≤ ${(2 * p.spacing).toFixed(2)}; level with the tank would be ~${wrong.toFixed(1)})`)
+}
+
+// 6. Spin about the vertical through the tank's centre. Fit h = h₀ + c·r² to the
+// top particle per radial band, inside the tank's inscribed circle.
+{
+  const w = 0.8
+  const frame: FrameMotion = { omega: [0, w, 0], alpha: [0, 0, 0], pivot }
+  const t = createState(p)
+  for (let k = 0; k < 25 / p.dt; k++) step(t, p, undefined, frame)
+  const band = 0.5
+  const inscribed = Math.min(p.domain.max[0] - p.domain.min[0], p.domain.max[2] - p.domain.min[2]) / 2
+  const tops = new Map<number, number>()
+  for (let i = 0; i < t.n; i++) {
+    const r = Math.hypot(t.pos[i * 3] - pivot[0], t.pos[i * 3 + 2] - pivot[2])
+    const b = Math.floor(r / band)
+    tops.set(b, Math.max(tops.get(b) ?? -Infinity, t.pos[i * 3 + 1]))
+  }
+  let m = 0
+  let sx = 0
+  let sy = 0
+  let sxx = 0
+  let sxy = 0
+  for (const [b, h] of tops) {
+    const r = (b + 0.5) * band
+    if (r > inscribed - band) continue
+    m++
+    sx += r * r
+    sy += h
+    sxx += r ** 4
+    sxy += r * r * h
+  }
+  const c = (m * sxy - sx * sy) / (m * sxx - sx * sx)
+  const expected = (w * w) / (2 * g)
+  check('spinning tank: Newton\'s paraboloid', Math.abs(c / expected - 1) <= 0.15,
+    `curvature ${c.toFixed(4)} vs ω²/2g = ${expected.toFixed(4)} (±15%)`)
+}
+
+// 7. Swoosh: the target tumbles about a skewed axis at 3 rad/s (above MAX_SPIN),
+// reversing every 2 s, applied once per 60 Hz frame like a user's drag.
+{
+  const t = createState(p)
+  const tank = createTankMotion()
+  const sp: Params = structuredClone(p)
+  const frameSteps = 4
+  let escaped = 0
+  let nonFinite = 0
+  let maxRho = 0
+  let maxSpeed = 0
+  const runFrames = (seconds: number, drive: (time: number) => void) => {
+    for (let f = 0; f < seconds / (frameSteps * p.dt); f++) {
+      drive(f * frameSteps * p.dt)
+      const motion = advanceTank(tank, frameSteps * p.dt, pivot, g)
+      sp.gravity = motion.gravity
+      for (let k = 0; k < frameSteps; k++) {
+        step(t, sp, undefined, motion.frame)
+        for (let i = 0; i < t.n; i++) {
+          let v2 = 0
+          for (let d = 0; d < DIM; d++) {
+            const x = t.pos[i * DIM + d]
+            const v = t.vel[i * DIM + d]
+            if (!Number.isFinite(x) || !Number.isFinite(v)) nonFinite++
+            if (!(x >= p.domain.min[d] && x <= p.domain.max[d])) escaped++
+            v2 += v * v
+          }
+          maxSpeed = Math.max(maxSpeed, Math.sqrt(v2))
+          maxRho = Math.max(maxRho, t.density[i] / p.restDensity)
+        }
+      }
+    }
+  }
+  runFrames(10, (time) => {
+    const dir = Math.floor(time / 2) % 2 === 0 ? 1 : -1
+    nudgeTarget(tank, [1, 0.4, 0.7], dir * 3 * frameSteps * p.dt)
+  })
+  check('swooshing stays bounded', nonFinite === 0 && escaped === 0 && maxRho < 2,
+    `max ρ/ρ₀ ${maxRho.toFixed(2)}, max |v| ${maxSpeed.toFixed(1)}, escaped ${escaped}, non-finite ${nonFinite}`)
+  levelTarget(tank)
+  runFrames(20, () => {})
+  let sum = 0
+  let m = 0
+  const nbrs = Float64Array.from(t.neighborCount).sort()
+  const med = nbrs[Math.floor(nbrs.length / 2)]
+  for (let i = 0; i < t.n; i++) {
+    if (t.neighborCount[i] < 0.9 * med) continue
+    sum += t.density[i] / p.restDensity
+    m++
+  }
+  const spin = Math.hypot(...tank.omega)
+  check('levels and resettles after swooshing', Math.abs(sum / m - 1) <= 0.05 && spin < 1e-3,
+    `bulk mean ρ/ρ₀ ${(sum / m).toFixed(3)}, tank spin ${spin.toExponential(1)} rad/s`)
+}
 
 process.exit(results.every(Boolean) ? 0 : 1)

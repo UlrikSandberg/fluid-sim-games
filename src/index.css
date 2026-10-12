@@ -30,6 +30,10 @@ body,
   cursor: grab;
 }
 
+.canvas-3d.drag-tank {
+  cursor: move;
+}
+
 .hud {
   position: absolute;
   top: 8px;
