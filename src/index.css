@@ -346,8 +346,7 @@ body,
   pointer-events: none;
 }
 
-.standing,
-.results li {
+.standing {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -358,8 +357,7 @@ body,
   flex: 1;
 }
 
-.standing .status,
-.results .status {
+.standing .status {
   margin-left: auto;
   color: #8b949e;
 }
@@ -372,44 +370,275 @@ body,
   border-radius: 50%;
 }
 
-.results {
+.race-results {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: min(340px, calc(100% - 32px));
-  padding: 16px 20px;
-  font-size: 13px;
-  background: #161b22;
-  border: 1px solid #f2c230;
-  border-radius: 8px;
-  box-shadow: 0 8px 40px rgb(0 0 0 / 0.6);
+  inset: 0;
+  z-index: 20;
+  isolation: isolate;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 72% 35%, #263f58 0%, #152434 45%, #0b1521 100%);
+  color: #ecf3fa;
 }
 
-.results h2 {
-  margin: 0 0 10px;
-  font-size: 20px;
+.race-results-canvas,
+.race-results-stage {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 
-.results ol {
-  margin: 0 0 12px;
-  padding: 0;
-  list-style: none;
-}
-
-.results .chore {
-  margin: 0 0 12px;
-}
-
-.results button {
+.race-results-canvas canvas {
+  display: block;
   width: 100%;
-  padding: 6px;
+  height: 100%;
+}
+
+.race-results-podium-region {
+  position: absolute;
+  top: 13%;
+  left: 42%;
+  width: 55%;
+  height: 53%;
+}
+
+.race-results-podium-labels {
+  position: absolute;
+  top: 69%;
+  left: 42%;
+  bottom: 4%;
+  width: 55%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  gap: 6px;
+  overflow-y: auto;
+  pointer-events: auto;
+  scrollbar-width: thin;
+}
+
+.race-results-podium-label {
+  min-width: 0;
+  padding: 8px 4px;
+  text-align: center;
+  font-size: clamp(11px, 1.3vw, 16px);
+  overflow-wrap: anywhere;
+  text-shadow: 0 2px 6px #000;
+}
+
+.race-results-podium-label strong,
+.race-results-podium-label span {
+  display: block;
+}
+
+.race-results-podium-label strong {
+  margin-bottom: 6px;
+}
+
+.race-results-podium-label.place-1 strong {
+  color: #f4cf6c;
+}
+
+.race-results-podium-label.place-2 strong {
+  color: #c6d7e6;
+}
+
+.race-results-podium-label.place-3 strong {
+  color: #e2a775;
+}
+
+.race-results-scores {
+  position: absolute;
+  top: 9%;
+  left: 3%;
+  bottom: 4%;
+  width: 37%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: clamp(12px, 2vw, 24px);
+  overflow-y: auto;
+  border: 1px solid rgb(244 207 108 / 0.5);
+  border-radius: 16px;
+  background: rgb(12 23 36 / 0.48);
+  box-shadow: 0 18px 64px rgb(0 0 0 / 0.35);
+  backdrop-filter: blur(2px);
+  font-size: 15px;
+  scrollbar-width: thin;
+}
+
+.race-results-scores h2 {
+  flex: none;
+  margin: 0;
+  font-size: clamp(18px, 2vw, 26px);
+  overflow-wrap: anywhere;
+}
+
+.race-results-scores h3 {
+  flex: none;
+  margin: 0;
+  font-size: 12px;
+  color: #b8cbdc;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.race-results-ranking {
+  flex: 1 0 64px;
+  min-height: 64px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-width: thin;
+}
+
+.race-results-ranking li {
+  display: grid;
+  grid-template-columns: 2ch 10px minmax(0, 1fr) minmax(55px, 34%);
+  align-items: baseline;
+  gap: 8px;
+  padding: 12px 0;
+  border-bottom: 1px solid rgb(184 203 220 / 0.15);
+}
+
+.race-results-name,
+.race-results-time,
+.race-results-chore {
+  overflow-wrap: anywhere;
+}
+
+.race-results-place,
+.race-results-time {
+  color: #b8cbdc;
+}
+
+.race-results-time {
+  text-align: right;
+  font-size: 14px;
+}
+
+.race-results-chore {
+  flex: none;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.race-results-actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.race-results-actions button {
+  flex: 1 1 140px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #617b92;
+  border-radius: 8px;
+  background: #23394f;
+  color: #ecf3fa;
   font: inherit;
-  color: inherit;
-  background: #21262d;
-  border: 1px solid #3a4552;
-  border-radius: 4px;
   cursor: pointer;
+}
+
+.race-results-actions button:hover {
+  background: #304e6b;
+}
+
+.race-results :focus-visible {
+  outline: 2px solid #f4cf6c;
+  outline-offset: 3px;
+}
+
+.race-results-fallback {
+  position: absolute;
+  top: 5%;
+  right: 4%;
+  max-width: 50%;
+  color: #b8cbdc;
+  font-size: 12px;
+}
+
+.app:has(.race-results) + .home-link {
+  top: 8px;
+  bottom: auto;
+  z-index: 21;
+}
+
+@media (max-height: 520px) and (min-width: 701px) {
+  .race-results-scores {
+    top: 12%;
+    bottom: 3%;
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .race-results-podium-region {
+    top: 5%;
+    height: 51%;
+  }
+
+  .race-results-podium-labels {
+    top: 60%;
+    bottom: 3%;
+  }
+}
+
+@media (max-width: 700px) {
+  .race-results-stage {
+    bottom: auto;
+    height: 45%;
+  }
+
+  .race-results-podium-region {
+    top: 5%;
+    left: 3%;
+    width: 94%;
+    height: 61%;
+  }
+
+  .race-results-podium-labels {
+    top: 69%;
+    left: 3%;
+    width: 94%;
+    bottom: 0;
+    gap: 2px;
+  }
+
+  .race-results-podium-label {
+    padding: 3px 2px;
+    font-size: 11px;
+  }
+
+  .race-results-podium-label strong {
+    margin-bottom: 3px;
+  }
+
+  .race-results-scores {
+    top: 47%;
+    left: 3%;
+    bottom: 3%;
+    width: 94%;
+    gap: 8px;
+    padding: 12px;
+    font-size: 13px;
+  }
+
+  .race-results-ranking li {
+    padding: 8px 0;
+  }
+
+  .race-results-time {
+    font-size: 12px;
+  }
+
+  .race-results-fallback {
+    top: 0;
+    max-width: 70%;
+    font-size: 10px;
+  }
 }
 
 .panel .racer {

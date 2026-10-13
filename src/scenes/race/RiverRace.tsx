@@ -10,6 +10,7 @@ import { duckColor, duckName, racers, renderEvents, renderStandings, saveRacers 
 import { defaultRiverLayout, estimateParticles, riverLayout } from './riverScene'
 import { MOVER_KINDS, type MoverKind } from './movers'
 import { courseLength, minRadius, piecesOverlap, type Piece, type PieceCounts, type PieceKind } from './course'
+import { RaceResults } from './RaceResults'
 
 // The game scene: named ducks race down a river built from pieces (straights,
 // bends, U-turns, waterfalls, flip zones) on the GPU solver. The ducks hang at the
@@ -130,7 +131,7 @@ export function RiverRace() {
     }
     const arrows = ['ArrowLeft', 'ArrowRight', 'ArrowUp']
     const down = (e: KeyboardEvent) => {
-      if (!arrows.includes(e.code) || (e.target as HTMLElement).closest('input, select, textarea')) return
+      if (!arrows.includes(e.code) || (e.target as HTMLElement).closest('input, select, textarea, .race-results')) return
       e.preventDefault()
       held.add(e.code)
       apply()
@@ -178,15 +179,12 @@ export function RiverRace() {
 
   return (
     <div className="app">
+      <div inert={results !== null} style={results !== null ? { visibility: 'hidden' } : undefined}>
       <div ref={canvasHostRef} className="canvas-host canvas-3d" />
       <Hud ref={hudRef} />
       <div ref={countdownRef} className="countdown" style={{ display: 'none' }} />
       <div ref={standingsRef} className="standings" style={{ display: 'none' }} />
       <div ref={eventsRef} className="events" />
-      {results && (
-        <Results standings={results} onAgain={() => controllerRef.current?.startRace()}
-          onNewCourse={() => controllerRef.current?.newCourse()} />
-      )}
       {phase === 'setup' && (
         <div className="setup">
           <button className="go" onClick={() => controllerRef.current?.startRace()}>▶ Start race (S)</button>
@@ -210,38 +208,11 @@ export function RiverRace() {
           onStyle={changeStyle}
         />
       </div>
-    </div>
-  )
-}
-
-// The end-of-race card: the winner, the placings, and who does the chore.
-function Results({ standings, onAgain, onNewCourse }: { standings: Standing[]; onAgain: () => void; onNewCourse: () => void }) {
-  const winner = standings[0]
-  const chore = racers.chore === 'last' ? standings[standings.length - 1] : winner
-  return (
-    <div className="results">
-      <h2>
-        🏆 <span style={{ color: duckColor(winner.index) }}>{duckName(winner.index)}</span> wins!
-      </h2>
-      <ol>
-        {standings.map((s) => (
-          <li key={s.index}>
-            <span className="dot" style={{ background: duckColor(s.index) }} />
-            {duckName(s.index)}
-            <span className="status">
-              {s.finishTime != null ? `${s.finishTime.toFixed(1)} s` : `${Math.round(s.progress * 100)}% (out of time)`}
-            </span>
-          </li>
-        ))}
-      </ol>
-      <p className="chore">
-        🧽 <strong style={{ color: duckColor(chore.index) }}>{duckName(chore.index)}</strong> does the chore
-        {standings.length > 1 && (racers.chore === 'last' ? ' (last place)' : ' (the winner)')}.
-      </p>
-      <div className="buttons">
-        <button onClick={onAgain}>Race again here (S)</button>
-        <button onClick={onNewCourse}>New course (N)</button>
       </div>
+      {results && (
+        <RaceResults standings={results} onAgain={() => controllerRef.current?.startRace()}
+          onNewCourse={() => controllerRef.current?.newCourse()} />
+      )}
     </div>
   )
 }

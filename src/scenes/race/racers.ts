@@ -1,4 +1,4 @@
-import { DUCK_COLORS } from '../../render/renderer3d'
+import { DUCK_COLORS } from '../../render/racerModels'
 import type { RaceEvent, Standing } from './loop'
 import { PICKUP_INFO } from './features'
 

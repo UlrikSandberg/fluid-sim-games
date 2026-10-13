@@ -24,6 +24,9 @@ export interface Standing {
   index: number // which duck (its name and colour index)
   finishTime: number | null // seconds after the start, once across the line
   progress: number // 0 at the start line, 1 at the finish
+  vessel: Vessel // actual body, not the next-race selection in the panel
+  halfSize: number[]
+  bow?: number
 }
 
 // A power-up going off: which duck, what, and how long ago (seconds).
@@ -277,6 +280,9 @@ function standings(bodies: Obstacle[], finishTimes: (number | null)[]): Standing
       index,
       finishTime: finishTimes[index] ?? null,
       progress: Math.min(1, Math.max(0, (sOf(o) - START_S) / span)),
+      vessel: o.shape?.kind === 'hull' ? 'boat' as const : 'duck' as const,
+      halfSize: [...o.halfSize],
+      bow: o.shape?.bow,
     }))
     .sort((a, b) => {
       if (a.finishTime != null && b.finishTime != null) return a.finishTime - b.finishTime
@@ -359,12 +365,15 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   let countdown = 0
   let sinceStart = 0
   let finishTimes: (number | null)[] = []
+  let finalStandings: Standing[] | null = null
   let flipUntil: number[] = [] // per duck, race time its flip wears off (0 = none)
   let zeroGUntil = 0
   let events: { duck: number; kind: PickupKind; at: number }[] = []
   let moverClock = 0 // simulated seconds the movers have been moving
   let rider: Obstacle | null = null // the duck being ridden (and steered)
   let rideYaw: number | null = null // the ride camera's smoothed heading
+  let accumulator = 0
+  let last = performance.now()
 
   // Builds riverLayout's course (with fresh rocks, swirls and pickups) and hangs
   // the ducks at the gate once it's ready. A course whose pieces don't fit
@@ -378,6 +387,9 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     engine = null
     renderer = null
     phase = 'idle'
+    finalStandings = null
+    accumulator = 0
+    last = performance.now()
     course = g
     courseState.built = JSON.stringify(riverLayout)
     courseState.length = g.length
@@ -440,6 +452,9 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     renderer?.setGate(line.gate)
     for (const pickup of features.pickups) pickup.taken = false
     phase = 'setup'
+    finalStandings = null
+    accumulator = 0
+    last = performance.now()
     countdown = 0
     sinceStart = 0
     zeroGUntil = 0
@@ -489,8 +504,6 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   // For poking at a race from the browser console (and the headless checks).
   if (import.meta.env.DEV) Object.assign(window, { __race: { features, course: () => course, raceView, renderer: () => renderer, bodies: () => engine?.bodies ?? [] } })
 
-  let accumulator = 0
-  let last = performance.now()
   let raf = 0
   let frames = 0
   let substepTotal = 0
@@ -503,7 +516,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     last = now
     rider = engine?.bodies[raceView.ride] ?? null
     let substeps = 0
-    if (paused || !engine) {
+    if (paused || !engine || phase === 'finished') {
       accumulator = 0
     } else {
       substeps = Math.min(Math.floor(accumulator / raceParams.dt), raceParams.maxSubsteps)
@@ -542,11 +555,15 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
           if (flipUntil[i] && sinceStart >= flipUntil[i]) flipUntil[i] = 0
         })
         grabPickups(engine.bodies)
-        if (finishTimes.every((t) => t != null) || sinceStart >= MAX_RACE) phase = 'finished'
+        if (finishTimes.every((t) => t != null) || sinceStart >= MAX_RACE) {
+          finalStandings = standings(engine.bodies, finishTimes)
+          phase = 'finished'
+          accumulator = 0
+        }
       }
     }
 
-    if (engine && renderer) {
+    if (engine && renderer && phase !== 'finished') {
       const first = rider != null && raceView.rideView === 'first'
       renderer.setDucks(engine.bodies, first ? raceView.ride : -1)
       renderer.setMovers(features.movers.map((m) => ({ ...m.o, color: MOVER_COLORS[m.kind] })))
@@ -592,7 +609,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         phase,
         countdown,
         sinceStart,
-        standings: standings(engine?.bodies ?? [], finishTimes),
+        standings: finalStandings ?? standings(engine?.bodies ?? [], finishTimes),
         events: events
           .filter((e) => sinceStart - e.at < EVENT_SECONDS)
           .map((e) => ({ duck: e.duck, kind: e.kind, age: sinceStart - e.at }))
@@ -629,6 +646,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       if (phase === 'setup' || phase === 'idle' || phase === 'finished') lineUp(count)
     },
     dropDuck() {
+      if (phase === 'finished') return // final placements cannot acquire new entrants
       // Just downstream of the inlet, above the water, on the centreline.
       const p = pointAt(course, 3)
       const vessel = vesselFor(engine?.bodies.length ?? 0)
@@ -642,6 +660,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       engine?.removeBody()
       renderer?.setGate(null)
       phase = 'idle'
+      finalStandings = null
       finishTimes = []
       flipUntil = []
     },
