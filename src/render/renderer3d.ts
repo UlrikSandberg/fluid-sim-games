@@ -1,7 +1,9 @@
 import * as THREE from 'three'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { Domain } from '../sim/params'
+import { createView3D, type View3D } from './view3d'
 import { WaterSurface3D } from './waterSurface3d'
+import type { FoamFlow } from './foamField'
 
 const BACKGROUND = 0x0d1117
 const ORBIT_FOV = 45
@@ -140,9 +142,10 @@ function disposeDuck(duck: THREE.Group) {
 // in a group that is rotated by the tank's orientation about the tank's centre;
 // the camera and floor stay in the world.
 export class Renderer3D {
+  private readonly view: View3D
   private readonly gl: THREE.WebGLRenderer
   private readonly scene = new THREE.Scene()
-  private readonly camera = new THREE.PerspectiveCamera(ORBIT_FOV, 1, 0.1, 500)
+  private readonly camera: THREE.PerspectiveCamera
   private readonly controls: OrbitControls
   private readonly mesh: THREE.InstancedMesh<THREE.IcosahedronGeometry, THREE.MeshLambertMaterial>
   // Per-instance linear RGB (stride 3). Fill it, then call commitColors().
@@ -175,17 +178,20 @@ export class Renderer3D {
   private readonly followGoal = new THREE.Vector3()
   private following = false
   private beforeRide: { position: THREE.Vector3; target: THREE.Vector3 } | null = null // set while riding
-  private readonly resizeObserver: ResizeObserver
-  private readonly container: HTMLElement
 
   // `cameraOffset`: where the camera starts relative to the domain's centre
   // (default: front-right and above, at a distance that frames the tank).
   constructor(container: HTMLElement, count: number, radius: number, domain: Domain, cameraOffset?: number[]) {
-    this.container = container
-    this.gl = new THREE.WebGLRenderer({ antialias: true })
-    this.gl.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    this.gl.setClearColor(BACKGROUND)
-    container.appendChild(this.gl.domElement)
+    this.view = createView3D(container, {
+      fov: ORBIT_FOV,
+      clearColor: BACKGROUND,
+      // The water's render targets follow the canvas (a resize can come before
+      // the surface exists, from the first observation).
+      onResize: (gl) => this.surface?.resize(gl),
+    })
+    this.gl = this.view.gl
+    this.camera = this.view.camera
+    this.controls = this.view.controls
 
     this.scene.add(new THREE.HemisphereLight(0xdfe9ff, 0x1a2230, 1.4))
     const sun = new THREE.DirectionalLight(0xffffff, 1.8)
@@ -248,15 +254,10 @@ export class Renderer3D {
       ? new THREE.Vector3(cameraOffset[0], cameraOffset[1], cameraOffset[2])
       : new THREE.Vector3(0.55, 0.45, 1).normalize().multiplyScalar(size * 1.9)
     this.camera.position.copy(center).add(offset)
-    this.controls = new OrbitControls(this.camera, this.gl.domElement)
     this.controls.target.copy(center)
-    this.controls.enableDamping = true
     this.controls.maxPolarAngle = Math.PI * 0.48 // stay above the floor
     this.controls.update()
-
-    this.resizeObserver = new ResizeObserver(() => this.resize())
-    this.resizeObserver.observe(container)
-    this.resize()
+    this.surface.resize(this.gl)
   }
 
   // Write translations straight into the column-major instance matrices
@@ -543,8 +544,14 @@ export class Renderer3D {
     this.mesh.instanceColor!.needsUpdate = true
   }
 
-  // `water`: draw the fluid as a shaded surface (see waterSurface3d.ts) instead of spheres.
-  render(water: boolean) {
+  // The surface flow the foam's texture moves along (realistic look).
+  setFoamFlow(flow: FoamFlow) {
+    this.surface.setFlow(flow)
+  }
+
+  // `water`: draw the fluid as a shaded surface (see waterSurface3d.ts) instead of
+  // spheres; `realistic`: as clear water with foam, the colours being FoamField's.
+  render(water: boolean, realistic = false) {
     const now = performance.now()
     const dt = Math.min((now - this.lastFrame) / 1000, 0.1)
     this.lastFrame = now
@@ -563,22 +570,11 @@ export class Renderer3D {
       this.camera.position.add(step)
     }
     if (!this.beforeRide) this.controls.update() // applies damping (and would turn a riding camera)
-    if (water) this.surface.render(this.gl, this.scene, this.camera, this.mesh)
+    if (water) this.surface.render(this.gl, this.scene, this.camera, this.mesh, realistic)
     else this.gl.render(this.scene, this.camera)
   }
 
-  private resize() {
-    const { clientWidth: w, clientHeight: h } = this.container
-    if (w === 0 || h === 0) return
-    this.gl.setSize(w, h)
-    this.surface.resize(this.gl)
-    this.camera.aspect = w / h
-    this.camera.updateProjectionMatrix()
-  }
-
   dispose() {
-    this.resizeObserver.disconnect()
-    this.controls.dispose()
     this.surface.dispose()
     this.mesh.geometry.dispose()
     this.mesh.material.dispose()
@@ -609,7 +605,6 @@ export class Renderer3D {
     this.rim.dispose()
     this.bounds.dispose()
     this.floor.dispose()
-    this.gl.dispose()
-    this.gl.domElement.remove()
+    this.view.dispose()
   }
 }

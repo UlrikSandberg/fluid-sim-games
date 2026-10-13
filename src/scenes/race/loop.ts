@@ -2,8 +2,9 @@ import { particleRadius, type Params } from '../../sim/params'
 import type { FrameMotion, Obstacle, SimState } from '../../sim/sph'
 import { rotate, type Quat } from '../../sim/quat'
 import { Renderer3D } from '../../render/renderer3d'
+import { FoamField } from '../../render/foamField'
 import { getColorMode, writeColors, type ColorModeId, type RenderStyle } from '../../render/colorModes'
-import { GpuEngine } from '../fluid3d/engines'
+import { GpuEngine } from '../../engines/sph'
 import { DEFAULT_CURRENT, START_S, finishS, riverLayout, riverParams, riverScene } from './riverScene'
 import {
   PICKUP_INFO, features, generateFeatures, randomizeCourse, swirlLevel, swirlOnDuck, updateSwirls, type PickupKind,
@@ -352,6 +353,7 @@ export const courseState = { built: '', length: course.length, version: 0 }
 export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) => void): RaceController {
   let engine: GpuEngine | null = null
   let renderer: Renderer3D | null = null
+  let foam: FoamField | null = null
   let generation = 0
   let paused = false
   let noWebGpu = false
@@ -412,6 +414,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       renderer = new Renderer3D(container, created.n, particleRadius(raceParams), g.domain,
         [-0.07 * view, 0.45 * view, 0.85 * view])
       renderer.showBounds(false)
+      foam = new FoamField({ ...raceParams, domain: g.domain })
       renderer.addTerrain(terrain(g))
       for (const rock of rocks) {
         const bed = bedAt(g, locate(g, (rock.min[0] + rock.max[0]) / 2, (rock.min[2] + rock.max[2]) / 2).s)
@@ -572,13 +575,19 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
         rideYaw = null
         renderer.ride(null)
       }
+      // The "Water" colour mode drawn as water: clear, with foam and spray.
+      const realistic = raceView.style === 'water' && raceView.colorMode === 'water'
       view = engine.view()
       if (view) {
         renderer.updatePositions(view.pos, view.n)
-        writeColors(getColorMode(raceView.colorMode), view, raceParams, renderer.colors)
+        if (realistic && foam) {
+          foam.update(view, frameDt, renderer.colors)
+          renderer.setFoamFlow(foam.flow)
+        }
+        else writeColors(getColorMode(raceView.colorMode), view, raceParams, renderer.colors)
         renderer.commitColors()
       }
-      renderer.render(raceView.style === 'water')
+      renderer.render(raceView.style === 'water', realistic)
     }
 
     frames++

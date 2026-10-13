@@ -9,7 +9,7 @@ import {
   TANKS, applyTank, gpuSupport, params3d, selectEngine, startLoop3D, tankGravity, view3d,
   type DragMode, type SimController3D, type TankSize,
 } from './loop'
-import type { EngineKind } from './engines'
+import type { EngineKind } from '../../engines/sph'
 
 // The 3D fluid scene: the shared solver with a 3D domain, an orbit camera and
 // lit spheres. No mouse forces yet (the mouse drives the camera); that needs ray

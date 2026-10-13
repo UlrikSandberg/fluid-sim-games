@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { Home } from './scenes/Home'
 import { scenes } from './scenes/registry'
 
@@ -21,7 +21,9 @@ export function App() {
   const Scene = scene.component
   return (
     <>
-      <Scene />
+      <Suspense fallback={<div className="loading">Loading…</div>}>
+        <Scene />
+      </Suspense>
       <a className="home-link" href="#/">
         ← Scenes
       </a>

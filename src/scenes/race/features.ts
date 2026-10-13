@@ -1,7 +1,7 @@
 import type { SolidBox } from '../../sim/sph'
 import type { Params } from '../../sim/params'
 import { MAX_BOXES, MAX_SWIRLS } from '../../gpu/sphShaders'
-import { MAX_MOVERS } from '../fluid3d/engines'
+import { MAX_MOVERS } from '../../engines/sph'
 import { MOVER_KINDS, makeMover, type Mover, type MoverKind } from './movers'
 import { pointAt, randomPieces, waterAt, type CourseGeometry, type PieceCounts } from './course'
 import { START_S, finishS, type RiverLayout } from './riverScene'
