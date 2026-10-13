@@ -1,10 +1,10 @@
-import type { Params } from '../../sim/params'
+import type { Params } from '../sim/params'
 import {
   collideBodies, createState, integrateObstacle, makeObstacle, obstacleLattice, setObstacle, step,
   type BodyShape, type FrameMotion, type Obstacle, type SimState,
-} from '../../sim/sph'
-import { GpuSph, requestDevice, type GpuBody, type GpuScene, type GpuSwirl } from '../../gpu/sphGpu'
-import { MAX_BODIES } from '../../gpu/sphShaders'
+} from '../sim/sph'
+import { GpuSph, requestDevice, type GpuBody, type GpuScene, type GpuSwirl } from '../gpu/sphGpu'
+import { MAX_BODIES } from '../gpu/sphShaders'
 
 // Floating bodies (ducks, the sandbox's box); the rest of the GPU's body slots
 // are for kinematic movers.

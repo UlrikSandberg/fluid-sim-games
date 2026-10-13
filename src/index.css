@@ -761,3 +761,45 @@ body,
 .panel .toggle.kinds button {
   font-size: 10px;
 }
+
+.loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #8b949e;
+}
+
+/* Ripple tank */
+.ripple .panel .preset-toggle {
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.ripple .panel .preset-toggle button {
+  flex: 1 1 45%;
+  border-radius: 3px;
+}
+
+.ripple .panel .preset-toggle button + button {
+  border-left: 1px solid #3a4552;
+}
+
+.ripple .panel .toggle button.on {
+  background: #12313b;
+  border-color: #54d6ff;
+  color: #8ee5ff;
+}
+
+.blurb {
+  margin: 6px 0 0;
+  line-height: 1.45;
+  color: #8b949e;
+}
+
+.check-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}

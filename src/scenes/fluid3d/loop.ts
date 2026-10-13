@@ -2,8 +2,9 @@ import { defaultParams3D, particleRadius, type Params } from '../../sim/params'
 import type { SimState } from '../../sim/sph'
 import { advanceTank, createTankMotion, levelTarget, nudgeTarget } from '../../sim/tankMotion'
 import { Renderer3D } from '../../render/renderer3d'
+import { FoamField } from '../../render/foamField'
 import { getColorMode, writeColors, type ColorModeId, type RenderStyle } from '../../render/colorModes'
-import { CpuEngine, GpuEngine, type EngineKind, type FluidEngine } from './engines'
+import { CpuEngine, GpuEngine, type EngineKind, type FluidEngine } from '../../engines/sph'
 
 export interface Stats3D {
   fps: number
@@ -89,6 +90,7 @@ async function createEngine(): Promise<FluidEngine> {
 export function startLoop3D(container: HTMLElement, onStats: (s: Stats3D) => void): SimController3D {
   let engine: FluidEngine | null = null
   let renderer: Renderer3D | null = null
+  let foam: FoamField | null = null
   let generation = 0 // ignores engines that finish starting after a newer reset
   let paused = false
   const tank = createTankMotion()
@@ -114,6 +116,7 @@ export function startLoop3D(container: HTMLElement, onStats: (s: Stats3D) => voi
       }
       engine = created
       renderer = new Renderer3D(container, created.n, particleRadius(params3d), params3d.domain)
+      foam = new FoamField(params3d)
       accumulator = 0
     })
   }
@@ -130,7 +133,8 @@ export function startLoop3D(container: HTMLElement, onStats: (s: Stats3D) => voi
 
   const frame = (now: number) => {
     // The rAF timestamp can precede the performance.now() taken at startup, hence max(0).
-    accumulator += Math.min(Math.max((now - last) / 1000, 0), 0.1)
+    const frameDt = Math.min(Math.max((now - last) / 1000, 0), 0.1)
+    accumulator += frameDt
     last = now
 
     let substeps = 0
@@ -153,13 +157,19 @@ export function startLoop3D(container: HTMLElement, onStats: (s: Stats3D) => voi
       renderer.setTankOrientation(tank.q)
       const o = engine.obstacle
       renderer.setBody(o ? o.center : null, o ? o.halfSize : [], o ? o.q : [1, 0, 0, 0])
+      // The "Water" colour mode drawn as water: clear, with foam and spray.
+      const realistic = view3d.style === 'water' && view3d.colorMode === 'water'
       view = engine.view()
       if (view) {
         renderer.updatePositions(view.pos, view.n)
-        writeColors(getColorMode(view3d.colorMode), view, params3d, renderer.colors)
+        if (realistic && foam) {
+          foam.update(view, frameDt, renderer.colors)
+          renderer.setFoamFlow(foam.flow)
+        }
+        else writeColors(getColorMode(view3d.colorMode), view, params3d, renderer.colors)
         renderer.commitColors()
       }
-      renderer.render(view3d.style === 'water')
+      renderer.render(view3d.style === 'water', realistic)
     }
 
     frames++

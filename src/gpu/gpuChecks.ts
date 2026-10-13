@@ -7,7 +7,7 @@ import { defaultParams3D, particleRadius, type Params } from '../sim/params'
 import { advanceTank, createTankMotion } from '../sim/tankMotion'
 import type { FrameMotion } from '../sim/sph'
 import { GpuSph, requestDevice, type GpuReadback } from './sphGpu'
-import { GpuEngine } from '../scenes/fluid3d/engines'
+import { GpuEngine } from '../engines/sph'
 
 export interface CheckResult {
   name: string

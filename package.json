@@ -11,11 +11,12 @@
     "check": "node scripts/check-sim.ts",
     "test:determinism": "node scripts/determinism.ts",
     "test:acceptance": "node scripts/acceptance.ts",
-    "test": "node scripts/determinism.ts && node scripts/acceptance.ts && node scripts/buoyancy.ts && node scripts/acceptance3d.ts && node scripts/buoyancy.ts --3d",
+    "test": "node scripts/determinism.ts && node scripts/acceptance.ts && node scripts/buoyancy.ts && node scripts/acceptance3d.ts && node scripts/buoyancy.ts --3d && node scripts/shallow.ts",
     "test:buoyancy": "node scripts/buoyancy.ts",
     "test:3d": "node scripts/acceptance3d.ts",
     "test:buoyancy3d": "node scripts/buoyancy.ts --3d",
-    "test:gpu": "node scripts/gpu-check.mjs"
+    "test:gpu": "node scripts/gpu-check.mjs",
+    "test:shallow": "node scripts/shallow.ts"
   },
   "dependencies": {
     "react": "^19.2.8",

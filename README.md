@@ -2,12 +2,15 @@
 
 The foundation for a 3D duck-racing game in which ducks float down a river driven by a
 real fluid simulation, used as a verifiably fair randomizer. One weakly-compressible
-SPH solver drives two scenes, picked from a start screen:
+SPH solver drives three scenes, and a shallow-water solver a fourth, picked from a start
+screen:
 
 - **2D Sandbox** (`#/2d`): a side-view tank with mouse forces, a floating rigid body
   and water rendering.
 - **3D Sandbox** (`#/3d`): the same solver in a 3D tank, on the CPU or the GPU.
 - **River Race** (`#/race`): the game, in progress. A river with a waterfall on the GPU.
+- **Ripple Tank** (`#/ripples`): waves on a height field (shallow-water equations): a
+  pool you poke, a wave maker, slits, and an underwater lens.
 
 A simulation's dimension is its domain's (`dimOf(params)`), so 3D was a preset plus a
 renderer, not a rewrite.
@@ -18,7 +21,8 @@ renderer, not a rewrite.
 npm install
 npm run dev            # http://localhost:5173 (start screen; the sandbox is #/2d)
 npm run build          # typecheck + static build in dist/
-npm test               # determinism, acceptance, buoyancy, 3D checks (~5 min)
+npm test               # determinism, acceptance, buoyancy, 3D, shallow-water checks (~5 min)
+npm run test:shallow   # just the shallow-water checks (seconds)
 npm run check -- 20 stiffness=8000 dt=0.003   # headless dam break with param overrides
 npm run check -- --3d 10                      # the same, with the 3D preset
 npm run test:gpu       # GPU solver checks in headless Chrome (needs `npm run dev` running)
@@ -35,7 +39,7 @@ npm run test:gpu       # GPU solver checks in headless Chrome (needs `npm run de
 | Ctrl + click | Place the rectangle obstacle (replaces an existing one) |
 | Left drag inside the obstacle | Move it (speed-capped like the brush); a floating one keeps its velocity on release, so you can throw it |
 | Right click on the obstacle | Delete it |
-| `1`–`5` | Colour mode: density ρ/ρ₀, neighbour count, speed, pressure, water (foam = speed) |
+| `1`–`5` | Colour mode: density ρ/ρ₀, neighbour count, speed, pressure, water (foam = speed; in 3D water rendering, clear water with foam) |
 | `V`, or the panel's Draw toggle | Particles (diagnostic dots) or Water (smooth surface) |
 | Space | Pause / resume |
 
@@ -84,11 +88,27 @@ made light it lifts off.
 screen-space fluid rendering in `src/render/waterSurface3d.ts`. Particles render as
 sphere impostors into a depth target and a thickness target; a narrow-range filter
 (Truong & Yuksel 2018) smooths the depth into one surface without the axis streaks of
-a separable bilateral blur; a final pass rebuilds normals and shades. Thick water takes
-the colour mode's colour (`5`: blue, foaming white with speed), thin water shows the
-refracted scene through it, a Fresnel term mixes in sky reflection, and a depth test
-lets the floating box sit in the water. Known limits: faint vertical streaks can show
-inside tall breaking waves, and silhouettes stay slightly scalloped by the spheres.
+a separable bilateral blur; a final pass rebuilds normals and shades. With colour mode
+`5` (Water) it's drawn as clear water: what's behind and beneath shows through, bent by
+the surface and dimmed by the depth it crosses (red first, Beer–Lambert), with light
+scattered back from inside, a Fresnel sky reflection and the sun's glint. Foam lives in
+a 2D grid over the surface (`src/render/foamField.ts`, since the GPU reorders its
+particles each step and they can't carry it). Churning water makes it. That means a
+particle moving differently from the water around it (a plunge pool, the flow round a
+rock), or the local flow being slammed to a stop (a wave landing, a splash on a wall).
+Fast but smooth water (a river, the sheet over a waterfall's lip) makes none. Foam
+drifts with the surface flow and fades over ~2 s, and shows only where a particle is at
+a free surface. A free surface is judged by a shortage of neighbours, so walls and lids
+count and it works upside down in flip zones. The shader draws it as an irregular,
+broken lace of threads, a solid layer where it's thick, and small bubbles that swell
+and pop. The texture travels with the surface flow: the foam grid's velocities go to the
+GPU as a texture, and the pattern is dragged along in two crossfaded cycles (a flow map),
+so it moves with the water without stretching. Fresh churn also clouds the water briefly (bubbles, gone in
+a third of a second). Lone particles (few neighbours) are spray: left out
+of the surface, where they made blobs, and drawn as white droplets. The other colour
+modes keep the opaque, colour-mode shading. A depth test lets the floating box sit in
+the water. Known limits: faint vertical streaks can show inside tall breaking waves, and
+silhouettes stay slightly scalloped by the spheres.
 
 **GPU engine (WebGPU, the default where available):** the same physics as compute
 shaders in `src/gpu/` (WGSL in `sphShaders.ts`). Each substep is six dispatches:
@@ -248,6 +268,51 @@ then glides after the leading pack, then rests on the finish.
 
 Known roughness: some splash where recycled water re-enters.
 
+## Ripple Tank scene
+
+A pool 24 m × 16 m and 1 m deep on a 300×200 grid of 8 cm cells, solved with the
+shallow-water equations (`src/sim/shallow/shallow.ts`, plain TypeScript on the CPU,
+2–3 ms a step, 2–3 steps a frame). The water is a height field over a bed, with
+velocities on the faces between cells (a staggered grid). Each step:
+
+1. carries momentum with the flow, in Stelling & Duinmeijer's (2003)
+   momentum-conserving upwind form (it moves momentum into newly wetted cells, so a
+   flood front runs at the right speed);
+2. accelerates each face down the slope of the water surface (not the depth's, so a
+   lake over a bumpy bed stays still); a face is dry when neither side's water reaches
+   over the higher bed, which handles beaches and dam breaks;
+3. moves water by upwind fluxes, scaled so no cell is emptied below zero;
+4. relaxes sponge cells toward rest, so waves leave the tank instead of bouncing;
+5. makes foam where the surface is steep or the flow converges, and carries it.
+
+Presets: **Pool**; **Single slit** and **Double slit** (diffraction and
+interference); **Underwater lens**: a round shoal where the water is 0.3 m deep. Waves
+travel at √(g·h), so they slow over it and bend to a focus behind it. The wave maker is a
+paddle on the left wall. It's absorbing: each row drives the water toward 2·η_in − η
+(the shallow-water radiation condition), so waves reflected back from the slit wall are
+swallowed instead of piling up into a standing wave. "Open water" puts sponges on the
+other three walls.
+
+Controls: click to drop a ripple; hold to keep bobbing (move while holding for a wake
+and the Doppler effect); right-drag or Shift-drag to orbit; wheel to zoom; `W` wave
+maker, `H` heights view (crests red, troughs blue: interference patterns stand out),
+`R` reset, Space pause.
+
+Rendering (`src/render/heightfieldWater.ts`, made to be reused by later height-field
+scenes): the scene without the water renders to a target (colour and depth); then the
+water's shader refracts that by the surface slope, absorbs by the distance through the
+water, mixes in a sky reflection by Fresnel, adds the sun's glint and the simulation's
+foam. The floor's shader adds caustics from the surface's curvature (a crest focuses
+light below it).
+
+`npm run test:shallow` checks:
+- volume is kept (1e-8 relative);
+- waves run at √(g·h) (3.120 vs 3.132 m/s);
+- a lake at rest over bumps stays at rest;
+- a dam break has no negative depths and matches Ritter's exact solution (6 mm RMS);
+- sponges absorb ripples (10× less left after 20 s than in a closed pool);
+- a step is fast enough for real time.
+
 ## Layout
 
 ```text
@@ -258,19 +323,26 @@ src/scenes/    registry.ts (the scene list), Home.tsx
   race/        the river race: course.ts (pieces → centreline, lookup, ground),
                riverScene.ts (water and boundary), features.ts (rocks, swirls,
                power-ups), loop.ts, RiverRace.tsx
-src/sim/       solver: plain TypeScript over typed arrays, no DOM, runs in Node
+  ripples/     the ripple tank: presets.ts (tank set-ups), loop.ts, RippleTank.tsx
+               (scenes import shared modules, never each other; each is loaded
+               only when opened)
+src/engines/   sph.ts: the SPH solver as the scenes use it, CPU or GPU
+src/sim/       solvers: plain TypeScript over typed arrays, no DOM, runs in Node
+  shallow/       shallow.ts: shallow-water equations on a staggered height field
   params.ts      2D and 3D presets, dimOf, derived values (mass, CFL, brush caps)
   kernels.ts     Poly6 + Spiky; the only place with dimension-specific constants
   spatialHash.ts counting-sort cell grids (fluid, boundary), unique-pair list
   sph.ts         state arrays, boundary particles, the obstacle body, and step()
 src/gpu/       WebGPU solver: sphShaders.ts (WGSL), sphGpu.ts (buffers, passes,
                readback), gpuChecks.ts (in-browser checks for npm run test:gpu)
-src/render/    renderer.ts (2D, orthographic), renderer3d.ts (perspective, orbit),
+src/render/    view3d.ts (renderer, camera, orbit controls, resizing: any 3D scene),
+               renderer.ts (2D, orthographic), renderer3d.ts (the SPH scenes),
                colour modes, waterSurface.ts (2D metaballs),
-               waterSurface3d.ts (3D screen-space fluid)
+               waterSurface3d.ts (3D screen-space fluid), foamField.ts (its foam),
+               heightfieldWater.ts (height-field water: refraction, caustics)
 src/ui/        shared React pieces: HUD, legend, panel controls
 scripts/       determinism.ts, acceptance.ts, buoyancy.ts, acceptance3d.ts,
-               check-sim.ts (tuning)
+               shallow.ts, check-sim.ts (tuning)
 ```
 
 ## Phase 1 notes
