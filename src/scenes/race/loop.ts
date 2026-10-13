@@ -15,6 +15,7 @@ import {
 import type { BodyShape, SolidBox } from '../../sim/sph'
 import { racers, type Vessel } from './racers'
 import { MOVER_COLORS, moverConstraint, updateMovers } from './movers'
+import { createRaceAudio } from './audio'
 
 // idle: no ducks; setup: ducks hang at the gate while the water settles, until
 // Start; countdown: 3, 2, 1; racing; finished.
@@ -357,6 +358,7 @@ export const courseState = { built: '', length: course.length, version: 0 }
 // rendered with the shared 3D renderer. GPU only: a river this size isn't
 // playable on the CPU solver.
 export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) => void): RaceController {
+  const audio = createRaceAudio()
   let engine: GpuEngine | null = null
   let renderer: Renderer3D | null = null
   let foam: FoamField | null = null
@@ -383,6 +385,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   const build = () => {
     const g = buildCourse(riverLayout.pieces, riverLayout.width, riverLayout.depth)
     if (g.problem) return
+    audio.reset()
     const mine = ++generation
     engine?.dispose()
     renderer?.dispose()
@@ -444,6 +447,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
   // wait for Start). Puts the power-ups back.
   const lineUp = (count: number) => {
     if (!engine) return
+    audio.reset()
     engine.removeBody()
     const line = startLine(count)
     for (const racer of line.racers) engine.addBody(racer)
@@ -566,6 +570,8 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       }
     }
 
+    audio.update(sinceStart, engine?.bodies ?? [], finishTimes, phase === 'racing' && !paused)
+
     if (engine && renderer && phase !== 'finished') {
       const first = rider != null && raceView.rideView === 'first'
       renderer.setDucks(engine.bodies, first ? raceView.ride : -1)
@@ -642,6 +648,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
     },
     setPaused(p) {
       paused = p
+      if (p) audio.silence()
     },
     startRace() {
       if (phase === 'setup') {
@@ -666,6 +673,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       }
     },
     clearDucks() {
+      audio.reset()
       engine?.removeBody()
       renderer?.setGate(null)
       phase = 'idle'
@@ -674,6 +682,7 @@ export function startRaceLoop(container: HTMLElement, onStats: (s: RaceStats) =>
       flipUntil = []
     },
     dispose() {
+      audio.dispose()
       generation++
       cancelAnimationFrame(raf)
       engine?.dispose()
