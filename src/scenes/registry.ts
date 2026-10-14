@@ -40,4 +40,11 @@ export const scenes: SceneInfo[] = [
     status: 'ready',
     component: lazy(() => import('./ripples/RippleTank').then((m) => ({ default: m.RippleTank }))),
   },
+  {
+    path: '#/planet',
+    title: 'Water Planet',
+    description: 'An ocean held to a rocky planet by gravity toward its centre, weakening as 1/r². GPU solver.',
+    status: 'ready',
+    component: lazy(() => import('./planet/WaterPlanet').then((m) => ({ default: m.WaterPlanet }))),
+  },
 ]

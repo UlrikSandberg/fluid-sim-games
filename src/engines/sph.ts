@@ -76,7 +76,8 @@ export class GpuEngine implements FluidEngine {
   // Extra constraint on each body after each step (e.g. the river's curved banks,
   // which the CPU-side rigid body doesn't otherwise know about).
   constrainBody: ((o: Obstacle) => void) | null = null
-  private readonly gpu: GpuSph
+  private gpu: GpuSph
+  private readonly device: GPUDevice
   private readonly params: Params
   private bodyList: GpuBody[] = []
   // Kinematic bodies: moved by their owner (setting o.center, q, vel, omega and
@@ -86,7 +87,8 @@ export class GpuEngine implements FluidEngine {
   private lastReadback: object | null = null
   private cached: SimState | null = null
 
-  private constructor(gpu: GpuSph, params: Params) {
+  private constructor(device: GPUDevice, gpu: GpuSph, params: Params) {
+    this.device = device
     this.gpu = gpu
     this.params = params
   }
@@ -95,7 +97,30 @@ export class GpuEngine implements FluidEngine {
   // scene, the sandbox's tank.
   static async create(params: Params, scene?: GpuScene): Promise<GpuEngine | null> {
     const device = await requestDevice()
-    return device ? new GpuEngine(new GpuSph(device, params, scene), params) : null
+    return device ? new GpuEngine(device, new GpuSph(device, params, scene), params) : null
+  }
+
+  // Starts over from a new scene on the same device (e.g. new static boundary
+  // particles), keeping the bodies.
+  replaceScene(scene: GpuScene) {
+    this.gpu.dispose()
+    this.gpu = new GpuSph(this.device, this.params, scene)
+    this.lastReadback = null
+    this.cached = null
+    if (this.bodyList.length > 0 || this.moverList.length > 0) this.gpu.setBodies([...this.bodyList, ...this.moverList])
+  }
+
+  get capacity() {
+    return this.gpu.capacity
+  }
+
+  // Adds particles (stride 3) if there's room; returns how many fitted.
+  addParticles(pos: Float32Array, vel?: Float32Array): number {
+    return this.gpu.addParticles(pos, vel)
+  }
+
+  clearParticles() {
+    this.gpu.clearParticles()
   }
 
   // Replaces the river's whirlpools.

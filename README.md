@@ -2,7 +2,7 @@
 
 The foundation for a 3D duck-racing game in which ducks float down a river driven by a
 real fluid simulation, used as a verifiably fair randomizer. One weakly-compressible
-SPH solver drives three scenes, and a shallow-water solver a fourth, picked from a start
+SPH solver drives four scenes, and a shallow-water solver a fifth, picked from a start
 screen:
 
 - **2D Sandbox** (`#/2d`): a side-view tank with mouse forces, a floating rigid body
@@ -11,6 +11,8 @@ screen:
 - **River Race** (`#/race`): the game, in progress. A river with a waterfall on the GPU.
 - **Ripple Tank** (`#/ripples`): waves on a height field (shallow-water equations): a
   pool you poke, a wave maker, slits, and an underwater lens.
+- **Water Planet** (`#/planet`): an ocean held to a rocky planet by gravity toward its
+  centre (G·M/r²), on the GPU.
 
 A simulation's dimension is its domain's (`dimOf(params)`), so 3D was a preset plus a
 renderer, not a rewrite.
@@ -23,6 +25,7 @@ npm run dev            # http://localhost:5173 (start screen; the sandbox is #/2
 npm run build          # typecheck + static build in dist/
 npm test               # determinism, acceptance, buoyancy, 3D, shallow-water checks (~5 min)
 npm run test:shallow   # just the shallow-water checks (seconds)
+npm run test:planet    # gravity toward bodies, and the planet's build (seconds)
 npm run check -- 20 stiffness=8000 dt=0.003   # headless dam break with param overrides
 npm run check -- --3d 10                      # the same, with the 3D preset
 npm run test:gpu       # GPU solver checks in headless Chrome (needs `npm run dev` running)
@@ -313,6 +316,75 @@ light below it).
 - sponges absorb ripples (10× less left after 20 s than in a closed pool);
 - a step is fast enough for real time.
 
+## Water Planet scene
+
+Gravity can come from bodies as well as from a uniform vector: `Params.attractors`, each
+a centre, G·M and radius, pulling G·M/r² toward the centre (`gravityAt` in
+`src/sim/params.ts`, and the same few lines in the GPU's acceleration pass). Inside a
+body's radius the pull falls linearly to zero at the centre, as inside a uniform ball
+(the shell theorem). Without that, a particle that got near the centre felt an almost
+infinite pull and was slung into space. Floating bodies feel gravity at their own
+centre.
+
+The planet (`src/scenes/planet/planet.ts`) is a rocky ball whose radius is sea level.
+Its ground is a height map you can sculpt (`terrain.ts`): heights on a cube wrapped onto
+the sphere, six square grids about as fine as the particles, so any direction maps to a
+face and four samples to interpolate. A new planet's heights come from 3D value noise:
+continents rise gently from the coast to mountains inland (up to `relief`), the sea
+floor drops off the coast to `ocean` below, and about 30% is land. **Blank ball** starts
+it smooth and just above the sea, to sculpt from scratch. The rock is a band of boundary
+particles three smoothing lengths deep, measured straight down, so water can't leak
+through even under a steep coast. Its top is lifted half a spacing, so the water rests
+where the rock is drawn. One body at the centre pulls with G·M = g·R², so the gravity
+slider reads as gravity at sea level, and it's live. The ground drags on water touching
+it (`wallFriction`, an option of the GPU solver, off elsewhere). On free-slip ground, a
+film of poured water raced right round the planet, met itself on the far side, and
+splashed off into space.
+
+The panel (size, particle size, ocean depth, mountains) applies on **Build** and shows
+the particle count first; a planet past 450,000 particles (with room to pour) won't
+build. Radius 15 with particles 0.35 is about 180,000 and runs at 60 fps.
+
+Tools (left-drag; right- or shift-drag orbits):
+- **Raise / Lower** sculpt under the brush ring. The mesh follows live. The physics
+  catches up every 0.3 s while you hold and when you let go, rebuilding the rock in
+  20–30 ms with the water kept. Water more than a spacing inside the new rock moves out
+  on top of its own column. Catching up only at the end of a stroke moved thousands of
+  particles at once, packed tighter than the water's rest spacing, and the pressure
+  flung them off as spray. Moving the water that rests a little inside the rock's
+  nominal surface did the same: every rebuild threw off a few hundred particles.
+- **Pour** releases a disc of particles 1.2 above the ground, the sea or a settled pool
+  (whichever is highest), heading down at 2 units/s. A disc goes out every spacing ÷
+  speed seconds, so discs never overlap. Only slow water counts as the pool: counting
+  the falling stream made each nozzle a step higher than the last, and the stream fell
+  from far up at 100 units/s. Splashes still fling a few percent of droplets high, since
+  the escape speed of a radius-10 planet at this gravity is only about 14 units/s. They
+  take a while to fall back.
+- **Remove all** and **Refill the ocean** (on the current ground). The GPU solver now
+  keeps a particle capacity and a live count (`addParticles`, `clearParticles`), with
+  room for 80,000 poured particles beyond the starting ocean.
+
+View: **Water** (clear water, or the colour mode's colours on the water surface),
+**Particles** or **Hidden**, plus any of the colour modes (density, neighbours, speed,
+pressure, water). The water is seen from space: a black sky to reflect, and absorbing
+enough that the bottom shows only in the shallows. These oceans are a quarter of the
+radius deep, and clearer water showed the deep sea floor's horizon through it as a ring.
+It renders without foam, because the foam grid assumes "up" is +y.
+
+`npm run test:planet` checks:
+- the law: inverse square, linear inside the body, and pulls adding up;
+- that the CPU solver falls toward a body at G·M/r²;
+- the planet's build;
+- the brush: it raises the ground under it and nowhere else;
+- picking: a ray from space lands on the ground;
+- rebuilding: buried water moves onto the rock, or on top of the water above it.
+
+`npm run test:gpu` settles a planet for 15 s and checks that nothing leaks into the rock
+or flies off, and that the ocean's surface is a sphere at sea level. It also pours 81
+particles in and clears them. Next ideas: a moon raising tides (subtracting its pull at
+the planet's centre, since the planet falls toward it too, which gives the two bulges),
+spinning the planet, meteors, ducks.
+
 ## Layout
 
 ```text
@@ -324,6 +396,8 @@ src/scenes/    registry.ts (the scene list), Home.tsx
                riverScene.ts (water and boundary), features.ts (rocks, swirls,
                power-ups), loop.ts, RiverRace.tsx
   ripples/     the ripple tank: presets.ts (tank set-ups), loop.ts, RippleTank.tsx
+  planet/      the water planet: terrain.ts (sculptable height map), planet.ts (generation,
+               params, GPU scene, rebuilds), loop.ts (tools), WaterPlanet.tsx
                (scenes import shared modules, never each other; each is loaded
                only when opened)
 src/engines/   sph.ts: the SPH solver as the scenes use it, CPU or GPU
@@ -342,7 +416,7 @@ src/render/    view3d.ts (renderer, camera, orbit controls, resizing: any 3D sce
                heightfieldWater.ts (height-field water: refraction, caustics)
 src/ui/        shared React pieces: HUD, legend, panel controls
 scripts/       determinism.ts, acceptance.ts, buoyancy.ts, acceptance3d.ts,
-               shallow.ts, check-sim.ts (tuning)
+               shallow.ts, planet.ts, check-sim.ts (tuning)
 ```
 
 ## Phase 1 notes

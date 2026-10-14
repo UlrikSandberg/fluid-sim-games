@@ -5,7 +5,7 @@ import { buildGrid, createGrid } from '../sim/spatialHash'
 import { createState, type FrameMotion, type Obstacle, type SolidBox } from '../sim/sph'
 import { rotate } from '../sim/quat'
 import {
-  BODY_SLOT, BODY_VEC4S, BOX_SLOT, FALL_SLOT, MAX_BODIES, MAX_BOXES, MAX_FALLS, MAX_SWIRLS, MAX_ZONES, PARAMS_VEC4S, SWIRL_SLOT,
+  ATTRACTOR_SLOT, BODY_SLOT, BODY_VEC4S, BOX_SLOT, FALL_SLOT, MAX_ATTRACTORS, MAX_BODIES, MAX_BOXES, MAX_FALLS, MAX_SWIRLS, MAX_ZONES, PARAMS_VEC4S, SWIRL_SLOT,
   WORKGROUP, ZONE_SLOT, sphWgsl,
 } from './sphShaders'
 
@@ -38,6 +38,8 @@ export interface GpuBody {
 
 export interface GpuScene {
   fluid: Float32Array // initial positions, stride 3
+  velocity?: Float32Array // initial velocities, stride 3 (at rest without)
+  capacity?: number // room for this many particles (addParticles fills it); default: just the initial ones
   boundary: { pos: Float32Array; psi: Float32Array } // static boundary particles, stride 3
   boxes?: SolidBox[] // static solids for the push-out (their surfaces must be in `boundary`)
   current?: { speed: number; rate: number } // pull downstream to speed `speed` at `rate` 1/s
@@ -104,7 +106,8 @@ export async function requestDevice(): Promise<GPUDevice | null> {
 }
 
 export class GpuSph {
-  readonly n: number
+  n: number // particles in use
+  readonly capacity: number
   latest: GpuReadback | null = null
   private readonly device: GPUDevice
   private readonly params: Params
@@ -135,8 +138,10 @@ export class GpuSph {
   constructor(device: GPUDevice, p: Params, scene: GpuScene = tankScene(p)) {
     this.device = device
     this.params = p
-    const n = scene.fluid.length / 3
-    this.n = n
+    // Buffers are laid out for the capacity (n below); the live count is this.n.
+    const n = Math.max(scene.capacity ?? 0, scene.fluid.length / 3, 1)
+    this.capacity = n
+    this.n = scene.fluid.length / 3
     if ((scene.boxes?.length ?? 0) > MAX_BOXES) throw new Error(`at most ${MAX_BOXES} solid boxes`)
     this.boxes = scene.boxes ?? []
     this.recycle = scene.recycle
@@ -159,10 +164,13 @@ export class GpuSph {
     this.numCells = wallGrid.numCells
     this.grid = { min: wallGrid.min, cellSize: wallGrid.cellSize, cells: Array.from(wallGrid.cellsPerAxis) }
 
-    // Particles start at rest.
+    // Particles start at rest unless given velocities.
     const particles = new Float32Array(n * 8)
-    for (let i = 0; i < n; i++) {
-      for (let d = 0; d < 3; d++) particles[i * 8 + d] = scene.fluid[i * 3 + d]
+    for (let i = 0; i < this.n; i++) {
+      for (let d = 0; d < 3; d++) {
+        particles[i * 8 + d] = scene.fluid[i * 3 + d]
+        particles[i * 8 + 4 + d] = scene.velocity?.[i * 3 + d] ?? 0
+      }
     }
 
     const STORAGE = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC
@@ -243,6 +251,28 @@ export class GpuSph {
     if (total > 0) this.device.queue.writeBuffer(this.boundary, this.nWall * 16, data)
   }
 
+  // Adds particles after the live ones (positions, optional velocities, stride 3),
+  // as many as there's room for; returns how many were added.
+  addParticles(pos: Float32Array, vel?: Float32Array): number {
+    const k = Math.min(pos.length / 3, this.capacity - this.n)
+    if (k <= 0) return 0
+    const data = new Float32Array(k * 8)
+    for (let i = 0; i < k; i++) {
+      for (let d = 0; d < 3; d++) {
+        data[i * 8 + d] = pos[i * 3 + d]
+        data[i * 8 + 4 + d] = vel?.[i * 3 + d] ?? 0
+      }
+    }
+    this.device.queue.writeBuffer(this.particles, this.n * 32, data)
+    this.n += k
+    return k
+  }
+
+  // Removes every particle.
+  clearParticles() {
+    this.n = 0
+  }
+
   // Replaces the whirlpools (up to MAX_SWIRLS), e.g. as they come and go.
   setSwirls(swirls: GpuSwirl[]) {
     this.swirls = swirls.slice(0, MAX_SWIRLS)
@@ -274,18 +304,24 @@ export class GpuSph {
       pass.end()
     }
     const slot = this.staging.find((s) => !s.busy)
+    // Read back only the live particles (the staging buffer is laid out for the
+    // capacity, so the offsets stay put).
+    const live = this.n
+    const cap = this.capacity
     if (slot) {
-      encoder.copyBufferToBuffer(this.particles, 0, slot.buffer, 0, this.n * 32)
-      encoder.copyBufferToBuffer(this.fluid, 0, slot.buffer, this.n * 32, this.n * 16)
-      encoder.copyBufferToBuffer(this.bodyForce, 0, slot.buffer, this.n * 48, MAX_BODIES * 24)
+      if (live > 0) {
+        encoder.copyBufferToBuffer(this.particles, 0, slot.buffer, 0, live * 32)
+        encoder.copyBufferToBuffer(this.fluid, 0, slot.buffer, cap * 32, live * 16)
+      }
+      encoder.copyBufferToBuffer(this.bodyForce, 0, slot.buffer, cap * 48, MAX_BODIES * 24)
     }
     this.device.queue.submit([encoder.finish()])
-    if (slot) this.readBack(slot, substeps)
+    if (slot) this.readBack(slot, substeps, live)
   }
 
-  private readBack(slot: { buffer: GPUBuffer; busy: boolean }, substeps: number) {
+  private readBack(slot: { buffer: GPUBuffer; busy: boolean }, substeps: number, n: number) {
     slot.busy = true
-    const n = this.n
+    const cap = this.capacity
     slot.buffer.mapAsync(GPUMapMode.READ).then(
       () => {
         if (this.disposed) return
@@ -297,8 +333,8 @@ export class GpuSph {
           pos.set(particles.subarray(i * 8, i * 8 + 4), i * 4)
           vel.set(particles.subarray(i * 8 + 4, i * 8 + 8), i * 4)
         }
-        const aux = new Float32Array(new Float32Array(data, n * 32, n * 4))
-        const force = new Int32Array(data, n * 48, MAX_BODIES * 6)
+        const aux = new Float32Array(new Float32Array(data, cap * 32, n * 4))
+        const force = new Int32Array(data, cap * 48, MAX_BODIES * 6)
         const bodyForce = Array.from(force, (v) => v / BODY_FORCE_SCALE / substeps)
         slot.buffer.unmap()
         slot.busy = false
@@ -319,7 +355,8 @@ export class GpuSph {
       for (let c = 0; c < values.length; c++) (ints ? u : f)[slot * 4 + c] = values[c]
     }
     const nBodies = Math.min(bodies.length, this.bodyRanges.length)
-    set(0, [this.n, this.numCells, nBodies, this.nWall], true)
+    set(0, [this.capacity, this.numCells, nBodies, this.nWall], true)
+    set(19, [this.n, 0, 0, 0], true)
     set(1, [...this.grid.cells, 0], true)
     set(2, [...this.grid.min, this.grid.cellSize])
     set(3, [k.h, k.h2, k.poly6Coef, k.spikyGradCoef])
@@ -331,7 +368,7 @@ export class GpuSph {
     set(9, [...frame.pivot, 0])
     set(10, [...p.domain.min, 0])
     set(11, [...p.domain.max, 0])
-    set(12, [BODY_FORCE_SCALE, 0, 0, 0])
+    set(12, [BODY_FORCE_SCALE, p.wallFriction ?? 0, 0, 0])
     set(13, [this.current.speed, this.current.rate, 0, 0])
     const rc = this.recycle
     set(14, rc ? [rc.exitS, rc.inletS, rc.lift, 1] : [0, 0, 0, 0])
@@ -342,6 +379,12 @@ export class GpuSph {
     set(18, c ? [c.lookup.nx, c.lookup.nz, c.falls.length, c.zones.length] : [0, 0, 0, 0], true)
     c?.falls.forEach((f, i) => set(FALL_SLOT + i, [f.s, f.drop, 0, 0]))
     c?.zones.forEach((z, i) => set(ZONE_SLOT + i, [z.s0, z.s1, z.gravity, z.lid]))
+    const attractors = (p.attractors ?? []).slice(0, MAX_ATTRACTORS)
+    set(ATTRACTOR_SLOT, [attractors.length, 0, 0, 0], true)
+    attractors.forEach((a, i) => {
+      set(ATTRACTOR_SLOT + 1 + 2 * i, [...a.center, a.gm])
+      set(ATTRACTOR_SLOT + 2 + 2 * i, [a.radius, 0, 0, 0])
+    })
     set(SWIRL_SLOT, [this.swirls.length, 0, 0, 0], true)
     this.swirls.forEach((w, i) => set(SWIRL_SLOT + 1 + i, [w.x, w.z, w.radius, w.strength]))
     this.boxes.forEach((box, b) => {

@@ -8,6 +8,7 @@ import { advanceTank, createTankMotion } from '../sim/tankMotion'
 import type { FrameMotion } from '../sim/sph'
 import { GpuSph, requestDevice, type GpuReadback } from './sphGpu'
 import { GpuEngine } from '../engines/sph'
+import { defaultPlanet, groundRadius, makeTerrain, planetParams, planetScene, seaRadius, surfaceRadius } from '../scenes/planet/planet'
 
 export interface CheckResult {
   name: string
@@ -212,7 +213,61 @@ export async function runGpuChecks(log: (line: string) => void = console.log): P
     engine.dispose()
   }
 
-  // 5. Throughput at growing particle counts: GPU time per substep.
+  // 5. A water planet: gravity toward the centre (1/r²). After settling, no water
+  // has leaked into the rock or escaped, and the ocean's surface is a sphere at
+  // sea level.
+  {
+    const l = defaultPlanet
+    const t = makeTerrain(l)
+    const q = planetParams(l, g)
+    const sim = new GpuSph(device, q, planetScene(q, l, t, 1000))
+    const r = await run(device, sim, q, 15, still(q), [0, 0, 0])
+    const pos = new Float32Array(r.n * 3)
+    let leaked = 0
+    let escaped = 0
+    for (let i = 0; i < r.n; i++) {
+      for (let d = 0; d < 3; d++) pos[i * 3 + d] = r.pos[i * 4 + d]
+      const x = pos.subarray(i * 3, i * 3 + 3)
+      const d = Math.hypot(x[0], x[1], x[2])
+      // Through the rock, not just resting on it (the rock's lattice surface can
+      // sit up to a spacing under the ground's formula on a slope).
+      if (d < groundRadius(l, t, [x[0] / d, x[1] / d, x[2] / d]) - 3 * q.spacing) leaked++
+      if (d > seaRadius(l) + l.relief + 1) escaped++
+    }
+    check('planet: water stays on it', leaked === 0 && escaped === 0, `${leaked} inside the rock, ${escaped} flown off, of ${r.n}`)
+    const surface: number[] = []
+    for (let k = 0; k < 60; k++) {
+      const z = 1 - (2 * (k + 0.5)) / 60
+      const s = Math.sqrt(1 - z * z)
+      const dir = [s * Math.cos(k * 2.39996), z, s * Math.sin(k * 2.39996)]
+      if (groundRadius(l, t, dir) < seaRadius(l) - 1) surface.push(surfaceRadius(pos, r.n, dir, 0.99))
+    }
+    const mean = surface.reduce((a, b) => a + b, 0) / surface.length
+    const spread = Math.max(...surface) - Math.min(...surface)
+    check(
+      'planet: ocean is a sphere at sea level',
+      Math.abs(mean - seaRadius(l)) < 0.3 && spread < 0.6,
+      `surface radius ${mean.toFixed(2)} (sea level ${seaRadius(l)}), spread ${spread.toFixed(2)} over ${surface.length} ocean directions`,
+    )
+    // Pouring: particles added above the sea join the ocean; clearing empties it.
+    const before = r.n
+    const drop: number[] = []
+    for (let i = -4; i <= 4; i++) for (let j = -4; j <= 4; j++) drop.push(i * q.spacing, seaRadius(l) + 2, j * q.spacing)
+    const added = sim.addParticles(Float32Array.from(drop))
+    const after = await run(device, sim, q, 3, still(q), [0, 0, 0])
+    let flown = 0
+    for (let i = 0; i < after.n; i++) if (Math.hypot(after.pos[i * 4], after.pos[i * 4 + 1], after.pos[i * 4 + 2]) > seaRadius(l) + l.relief + 1) flown++
+    sim.clearParticles()
+    const empty = await fresh(device, sim, still(q), [0, 0, 0])
+    check(
+      'planet: pour and clear',
+      added === 81 && after.n === before + 81 && flown === 0 && empty.n === 0,
+      `added ${added}, ${before} → ${after.n} particles, ${flown} flown off; after clearing ${empty.n}`,
+    )
+    sim.dispose()
+  }
+
+  // 6. Throughput at growing particle counts: GPU time per substep.
   for (const [n, size] of [[4000, [16, 10, 8]], [40000, [32, 16, 16]], [100000, [40, 20, 24]], [200000, [48, 24, 32]]] as const) {
     const q: Params = { ...structuredClone(defaultParams3D), particleCount: n, domain: { min: [0, 0, 0], max: [...size] } }
     const sim = new GpuSph(device, q)

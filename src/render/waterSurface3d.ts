@@ -60,10 +60,25 @@ const impostorVertex = /* glsl */ `
   }
 `
 
+// Where the opaque scene is, for the two passes below: a particle behind it
+// (behind a planet's rock, say) is hidden, so it isn't part of the surface and
+// doesn't add water you can't see.
+const sceneDepthGlsl = /* glsl */ `
+  #include <packing>
+  uniform sampler2D tSceneDepth;
+  uniform vec2 resolution;
+  uniform float near;
+  uniform float far;
+  float sceneDepthHere() {
+    return -perspectiveDepthToViewZ(texture2D(tSceneDepth, gl_FragCoord.xy / resolution).r, near, far);
+  }
+`
+
 // Writes the view depth of the sphere's front surface, and the matching
 // hardware depth so the nearest sphere wins.
 // In the realistic look it also carries the sphere's foam, and skips spray.
 const depthFragment = /* glsl */ `
+  ${sceneDepthGlsl}
   uniform float radius;
   uniform mat4 uProjection;
   uniform float realistic;
@@ -75,23 +90,30 @@ const depthFragment = /* glsl */ `
     float r2 = dot(vOffset, vOffset);
     if (r2 >= 1.0) discard;
     vec3 p = vCenter + vec3(vOffset * radius, sqrt(1.0 - r2) * radius);
+    if (-p.z > sceneDepthHere()) discard;
     vec4 clip = uProjection * vec4(p, 1.0);
     gl_FragDepth = clip.z / clip.w * 0.5 + 0.5;
     gl_FragColor = vec4(-p.z, realistic > 0.5 ? vColor.r : 0.0, 0.0, 1.0);
   }
 `
 
-// Adds the chord length through the sphere (thickness) and colour weighted by it.
+// Adds the chord length through the sphere (thickness) and colour weighted by
+// it: only the part of the chord in front of the opaque scene.
 const thicknessFragment = /* glsl */ `
+  ${sceneDepthGlsl}
   uniform float radius;
   uniform float realistic;
   varying vec2 vOffset;
+  varying vec3 vCenter;
   varying vec3 vColor;
   void main() {
     if (realistic > 0.5 && vColor.g > 0.5) discard;
     float r2 = dot(vOffset, vOffset);
     if (r2 >= 1.0) discard;
-    float t = 2.0 * sqrt(1.0 - r2) * radius;
+    float half_ = sqrt(1.0 - r2) * radius;
+    float front = -(vCenter.z + half_);
+    float t = min(2.0 * half_, sceneDepthHere() - front);
+    if (t <= 0.0) discard;
     // (In the realistic look the colour's blue is the churned-in air, so the
     // weighted sum averages it through the depth.)
     gl_FragColor = vec4(vColor * t, t);
@@ -155,6 +177,9 @@ const compositeFragment = /* glsl */ `
   uniform vec3 cameraWorld;
   uniform float realistic;
   uniform float time;
+  uniform vec3 skyLow; // what the water reflects, looking down…
+  uniform vec3 skyHigh; // …and up
+  uniform float absorbScale;
   // The surface flow (FoamField's grid, tank coordinates) and world → tank.
   uniform sampler2D tFlow;
   uniform float hasFlow;
@@ -292,13 +317,13 @@ const compositeFragment = /* glsl */ `
       // water the light crosses, plus light scattered back from inside it.
       vec2 refractUv = clamp(vUv + n.xy * 0.03 * min(thickness, 6.0), vec2(0.0), vec2(1.0));
       vec3 behind = texture2D(tScene, refractUv).rgb;
-      vec3 transmit = exp(-ABSORB * thickness);
+      vec3 transmit = exp(-ABSORB * absorbScale * thickness);
       vec3 body = behind * transmit + INSCATTER * (1.0 - transmit) * (0.5 + 0.5 * diffuse);
       // Churned-in air (the thickness pass averaged it through the depth) turns
       // the water milky white.
       float air = smoothstep(0.3, 1.0, thick.b / max(thickness, 1e-4));
       body = mix(body, vec3(0.80, 0.88, 0.92) * (0.6 + 0.4 * diffuse), air * 0.4);
-      vec3 sky = mix(vec3(0.05, 0.07, 0.10), vec3(0.55, 0.70, 0.90), clamp(r.y * 0.5 + 0.5, 0.0, 1.0));
+      vec3 sky = mix(skyLow, skyHigh, clamp(r.y * 0.5 + 0.5, 0.0, 1.0));
       float glint = pow(max(dot(n, normalize(lightDir + view)), 0.0), 400.0) * 1.2;
       float sheen = pow(max(dot(n, normalize(lightDir + view)), 0.0), 40.0) * 0.15;
       color = mix(body, sky, fresnel) + glint + sheen;
@@ -376,6 +401,13 @@ const sprayFragment = /* glsl */ `
   }
 `
 
+const sceneDepthUniforms = () => ({
+  tSceneDepth: { value: null as THREE.Texture | null },
+  resolution: { value: new THREE.Vector2(1, 1) },
+  near: { value: 0.1 },
+  far: { value: 100 },
+})
+
 function fullscreenMaterial(fragmentShader: string, uniforms: Record<string, THREE.IUniform>) {
   return new THREE.ShaderMaterial({ vertexShader: fullscreenVertex, fragmentShader, uniforms, depthTest: false, depthWrite: false })
 }
@@ -418,7 +450,7 @@ export class WaterSurface3D {
       new THREE.ShaderMaterial({
         vertexShader: impostorVertex,
         fragmentShader: depthFragment,
-        uniforms: { radius: { value: impostorRadius }, uProjection: { value: new THREE.Matrix4() }, realistic: { value: 0 } },
+        uniforms: { radius: { value: impostorRadius }, uProjection: { value: new THREE.Matrix4() }, realistic: { value: 0 }, ...sceneDepthUniforms() },
       }),
       DEPTH_LAYER,
     )
@@ -426,7 +458,7 @@ export class WaterSurface3D {
       new THREE.ShaderMaterial({
         vertexShader: impostorVertex,
         fragmentShader: thicknessFragment,
-        uniforms: { radius: { value: impostorRadius }, realistic: { value: 0 } },
+        uniforms: { radius: { value: impostorRadius }, realistic: { value: 0 }, ...sceneDepthUniforms() },
         depthTest: false,
         depthWrite: false,
         transparent: true,
@@ -488,6 +520,9 @@ export class WaterSurface3D {
       viewToWorld: { value: new THREE.Matrix3() },
       cameraWorld: { value: new THREE.Vector3() },
       realistic: { value: 0 },
+      skyLow: { value: new THREE.Color(0.05, 0.07, 0.1) },
+      skyHigh: { value: new THREE.Color(0.55, 0.7, 0.9) },
+      absorbScale: { value: 1 },
       time: { value: 0 },
       tFlow: { value: null },
       hasFlow: { value: 0 },
@@ -499,6 +534,18 @@ export class WaterSurface3D {
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.compositeMaterial)
     this.quad.frustumCulled = false
     this.quadScene.add(this.quad)
+  }
+
+  // The realistic look's surroundings: `space` reflects black sky (a planet seen
+  // from orbit) rather than a daylight one; `absorb` scales how fast the water
+  // swallows light (bigger: deep water darker, shallows still clear).
+  setStyle(style: { space?: boolean; absorb?: number }) {
+    const u = this.compositeMaterial.uniforms
+    if (style.space !== undefined) {
+      u.skyLow.value.setRGB(...(style.space ? [0.005, 0.006, 0.01] : [0.05, 0.07, 0.1]) as [number, number, number])
+      u.skyHigh.value.setRGB(...(style.space ? [0.01, 0.012, 0.02] : [0.55, 0.7, 0.9]) as [number, number, number])
+    }
+    if (style.absorb !== undefined) u.absorbScale.value = style.absorb
   }
 
   // The foam field's surface flow, uploaded as a texture each frame.
@@ -546,7 +593,14 @@ export class WaterSurface3D {
     gl.render(scene, camera)
     particles.visible = true
 
-    // 2–3. Fluid depth and thickness, each pass seeing only its own layer.
+    // 2–3. Fluid depth and thickness, each pass seeing only its own layer, and
+    // only what's in front of the scene.
+    for (const m of [this.depthMesh.material, this.thicknessMesh.material]) {
+      m.uniforms.tSceneDepth.value = this.sceneTarget.depthTexture
+      m.uniforms.resolution.value.copy(this.size)
+      m.uniforms.near.value = camera.near
+      m.uniforms.far.value = camera.far
+    }
     const layers = camera.layers.mask
     gl.setClearColor(0x000000, 0)
     this.depthMesh.material.uniforms.uProjection.value.copy(camera.projectionMatrix)

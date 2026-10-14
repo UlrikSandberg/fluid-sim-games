@@ -51,7 +51,7 @@ function spiralTexture(): THREE.CanvasTexture {
 // in a group that is rotated by the tank's orientation about the tank's centre;
 // the camera and floor stay in the world.
 export class Renderer3D {
-  private readonly view: View3D
+  readonly view: View3D // renderer, camera and orbit controls, for scenes that pick or steer
   private readonly gl: THREE.WebGLRenderer
   private readonly scene = new THREE.Scene()
   private readonly camera: THREE.PerspectiveCamera
@@ -66,6 +66,8 @@ export class Renderer3D {
   private readonly surface: WaterSurface3D
   private readonly stone = new THREE.MeshLambertMaterial({ color: 0x5b6470 })
   private readonly solids: THREE.Mesh<THREE.BoxGeometry, THREE.MeshLambertMaterial>[] = []
+  private readonly extras: THREE.Object3D[] = []
+  private fluidHidden = false
   private readonly ground = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide })
   private readonly glass = new THREE.MeshBasicMaterial({
     color: 0xb07cff, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false,
@@ -235,6 +237,16 @@ export class Renderer3D {
   // Shows or hides the domain's outline (the tank's walls; the river doesn't need it).
   showBounds(visible: boolean) {
     this.bounds.visible = visible
+  }
+
+  showFloor(visible: boolean) {
+    this.floor.visible = visible
+  }
+
+  // Adds any object in tank coordinates (like the bodies); freed with the renderer.
+  addObject(o: THREE.Object3D) {
+    this.body.parent!.add(o)
+    this.extras.push(o)
   }
 
   // Shows the floating body (tank coordinates, quaternion [w, x, y, z]), or hides it.
@@ -453,6 +465,11 @@ export class Renderer3D {
     this.mesh.instanceColor!.needsUpdate = true
   }
 
+  // The realistic water's surroundings (see WaterSurface3D.setStyle).
+  setWaterStyle(style: { space?: boolean; absorb?: number }) {
+    this.surface.setStyle(style)
+  }
+
   // The surface flow the foam's texture moves along (realistic look).
   setFoamFlow(flow: FoamFlow) {
     this.surface.setFlow(flow)
@@ -460,6 +477,11 @@ export class Renderer3D {
 
   // `water`: draw the fluid as a shaded surface (see waterSurface3d.ts) instead of
   // spheres; `realistic`: as clear water with foam, the colours being FoamField's.
+  // Hides the fluid altogether (to see what's under it), or shows it again.
+  showFluid(visible: boolean) {
+    this.fluidHidden = !visible
+  }
+
   render(water: boolean, realistic = false) {
     const now = performance.now()
     const dt = Math.min((now - this.lastFrame) / 1000, 0.1)
@@ -479,7 +501,8 @@ export class Renderer3D {
       this.camera.position.add(step)
     }
     if (!this.beforeRide) this.controls.update() // applies damping (and would turn a riding camera)
-    if (water) this.surface.render(this.gl, this.scene, this.camera, this.mesh, realistic)
+    this.mesh.visible = !this.fluidHidden
+    if (water && !this.fluidHidden) this.surface.render(this.gl, this.scene, this.camera, this.mesh, realistic)
     else this.gl.render(this.scene, this.camera)
   }
 
@@ -491,6 +514,14 @@ export class Renderer3D {
     this.body.geometry.dispose()
     this.body.material.dispose()
     for (const s of this.solids) s.geometry.dispose()
+    for (const o of this.extras) {
+      o.traverse((c) => {
+        const m = c as THREE.Mesh
+        m.geometry?.dispose()
+        const mats = m.material ? (Array.isArray(m.material) ? m.material : [m.material]) : []
+        for (const mat of mats) mat.dispose()
+      })
+    }
     for (const b of this.banks) b.geometry.dispose()
     for (const d of this.ducks) disposeDuck(d)
     for (const m of this.movers) {

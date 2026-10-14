@@ -13,6 +13,16 @@ export interface Domain {
   max: Vec
 }
 
+// A body pulling everything toward it, Newton's way: G·M/r² along the line to
+// its centre. Inside its radius the pull falls linearly to zero at the centre
+// (the shell theorem, for a uniform ball), so nothing there feels an infinite
+// pull. A planet is one; a moon would be another.
+export interface Attractor {
+  center: Vec
+  gm: number // G·M, so the pull at distance r (outside) is gm / r²
+  radius: number
+}
+
 export interface Params {
   h: number // smoothing radius
   spacing: number // initial particle spacing (~0.4·h → ~20 neighbours in 2D)
@@ -20,7 +30,9 @@ export interface Params {
   stiffness: number // k = c_s², for either EOS (see equationOfState in sph.ts)
   useTait: boolean // switch to Tait EOS once linear is stable
   viscosityEps: number // XSPH ε
-  gravity: Vec
+  gravity: Vec // uniform part (the whole of it in the tank scenes)
+  attractors?: Attractor[] // point masses, added to `gravity`
+  wallFriction?: number // GPU only: drag toward rest from the static walls, as a multiple of XSPH ε (0 = free-slip)
   dt: number
   maxSubsteps: number
   restitution: number
@@ -62,6 +74,21 @@ export const defaultParams: Readonly<Params> = {
   obstacleSize: [6, 3],
   obstacleDynamic: false,
   obstacleDensity: 0.5,
+}
+
+// Gravity at a point: the uniform part plus each attractor's pull toward its
+// centre: G·M·d/r³ outside, G·M·d/R³ inside (d the offset to the centre).
+export function gravityAt(p: Pick<Params, 'gravity' | 'attractors'>, x: ArrayLike<number>, out: number[] = []): number[] {
+  const dim = p.gravity.length
+  for (let d = 0; d < dim; d++) out[d] = p.gravity[d]
+  for (const a of p.attractors ?? []) {
+    let r2 = 0
+    for (let d = 0; d < dim; d++) r2 += (a.center[d] - x[d]) ** 2
+    const r = Math.max(Math.sqrt(r2), a.radius, 1e-6)
+    const f = a.gm / (r * r * r)
+    for (let d = 0; d < dim; d++) out[d] += f * (a.center[d] - x[d])
+  }
+  return out
 }
 
 // Single mutable params object. The control panel writes into it, the loop reads it.

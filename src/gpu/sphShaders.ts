@@ -19,11 +19,13 @@ export const MAX_BODIES = 16 // floating ducks plus kinematic movers (see GpuEng
 export const MAX_SWIRLS = 8
 export const MAX_FALLS = 4 // waterfalls along a course
 export const MAX_ZONES = 3 // flip zones along a course
+export const MAX_ATTRACTORS = 4 // point masses (a planet, a moon…)
 export const BODY_VEC4S = 10 // per Body struct
-// Slots: 19 fixed vec4s, swirl count, swirls, falls, zones, boxes, bodies (see
-// GpuSph.writeParams).
-export const SWIRL_SLOT = 19
-export const FALL_SLOT = SWIRL_SLOT + 1 + MAX_SWIRLS
+// Slots: 20 fixed vec4s, swirl count, swirls, attractor count, attractors (two each),
+// falls, zones, boxes, bodies (see GpuSph.writeParams).
+export const SWIRL_SLOT = 20
+export const ATTRACTOR_SLOT = SWIRL_SLOT + 1 + MAX_SWIRLS
+export const FALL_SLOT = ATTRACTOR_SLOT + 1 + 2 * MAX_ATTRACTORS
 export const ZONE_SLOT = FALL_SLOT + MAX_FALLS
 export const BOX_SLOT = ZONE_SLOT + MAX_ZONES
 export const BODY_SLOT = BOX_SLOT + 2 * MAX_BOXES
@@ -47,7 +49,7 @@ struct Body {
 }
 
 struct Params {
-  counts: vec4u,     // n, numCells, number of bodies, nWall
+  counts: vec4u,     // capacity (where B, aux and v* start; see the table below), numCells, number of bodies, nWall
   cells: vec4u,      // cells per axis xyz
   gridMin: vec4f,    // grid origin xyz, cell size
   kernel: vec4f,     // h, h², poly6 coefficient, spiky gradient coefficient
@@ -59,15 +61,18 @@ struct Params {
   pivot: vec4f,
   domainMin: vec4f,
   domainMax: vec4f,
-  bodyMisc: vec4f,   // fixed-point scale for the force atomics
+  bodyMisc: vec4f,   // fixed-point scale for the force atomics; friction with the static walls (0 = free-slip)
   current: vec4f,    // river current: target speed downstream, relaxation rate (0 = off)
   recycle: vec4f,    // past s = exitS, move to inletS + (s − exitS) and up by lift; enabled (0/1)
   boxCount: vec4u,   // static solid boxes in use
   course: vec4f,     // river course: half width, sample spacing, sample count, enabled (0/1)
   course2: vec4f,    // lookup cell size, bed height at the start, 0, 0
   course3: vec4u,    // lookup cells along x and z, waterfalls, flip zones
+  live: vec4u,       // particles in use: [0, live) of the capacity
   swirlCount: vec4u,
   swirls: array<vec4f, ${MAX_SWIRLS}>, // whirlpools: centre x, centre z, radius, peak speed (sign = direction)
+  attractorCount: vec4u,
+  attractors: array<vec4f, ${2 * MAX_ATTRACTORS}>, // per body: centre xyz, G·M; radius, 0, 0, 0
   falls: array<vec4f, ${MAX_FALLS}>,   // waterfalls: lip s, drop, 0, 0
   zones: array<vec4f, ${MAX_ZONES}>,   // flip zones: s from, s to, gravity scale, lid height
   boxes: array<vec4f, ${2 * MAX_BOXES}>, // min, max per box (static, solid)
@@ -81,7 +86,8 @@ struct Particle {
 
 // Seven storage buffers, the most WebGPU guarantees is 8 per stage (Chrome on
 // Metal offers 10), so related arrays share a buffer at fixed offsets
-// (n particles, C = numCells, N course samples):
+// (n = the particle capacity, of which the first live.x are in use; C = numCells,
+// N course samples):
 //   particles:   A [0, n)  (unsorted, the persistent state) · B [n, 2n) (cell-sorted)
 //   fluid:       aux [0, n) (density, pressure, neighbours) · v* [n, 2n)
 //   indices:     cellOf [0, n) · cellStart [n, n+C+1) · wallCellStart [n+C+1, n+2C+2)
@@ -238,7 +244,7 @@ fn rowRange(starts: ptr<function, vec2u>, c: vec3i, dy: i32, dz: i32, wall: bool
 @compute @workgroup_size(${WORKGROUP})
 fn binCount(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
-  if (i >= P.counts.x) { return; }
+  if (i >= P.live.x) { return; }
   let c = cellIndex(cellCoords(particles[i].pos.xyz));
   indices[i] = c;
   atomicAdd(&cellAtomics[c], 1u);
@@ -277,7 +283,7 @@ fn scan(@builtin(local_invocation_id) lid: vec3u) {
 @compute @workgroup_size(${WORKGROUP})
 fn scatter(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
-  if (i >= P.counts.x) { return; }
+  if (i >= P.live.x) { return; }
   let c = indices[i];
   let slot = cellStartAt(c) + atomicAdd(&cellAtomics[P.counts.y + 1u + c], 1u);
   particles[P.counts.x + slot] = particles[i];
@@ -286,7 +292,7 @@ fn scatter(@builtin(global_invocation_id) gid: vec3u) {
 @compute @workgroup_size(${WORKGROUP})
 fn density(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
-  if (i >= P.counts.x) { return; }
+  if (i >= P.live.x) { return; }
   let xi = particles[P.counts.x + i].pos.xyz;
   let c = cellCoords(xi);
   let mass = P.fluid.x;
@@ -337,7 +343,7 @@ fn density(@builtin(global_invocation_id) gid: vec3u) {
 @compute @workgroup_size(${WORKGROUP})
 fn accel(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
-  if (i >= P.counts.x) { return; }
+  if (i >= P.live.x) { return; }
   let xi = particles[P.counts.x + i].pos.xyz;
   let vi = particles[P.counts.x + i].vel.xyz;
   let rhoi = fluid[i].x;
@@ -345,6 +351,14 @@ fn accel(@builtin(global_invocation_id) gid: vec3u) {
   let c = cellCoords(xi);
   let mass = P.fluid.x;
   var a = P.gravity.xyz + frameAccel(xi, vi);
+  // Bodies pulling: Newton's G·M/r² toward each centre, falling linearly to
+  // zero inside the body's radius (the shell theorem).
+  for (var m = 0u; m < P.attractorCount.x; m++) {
+    let am = P.attractors[2u * m];
+    let d = am.xyz - xi;
+    let r = max(max(length(d), P.attractors[2u * m + 1u].x), 1e-6);
+    a += d * (am.w / (r * r * r));
+  }
   if (P.course.w > 0.5) {
     let w = locate(xi);
     // River current: relax the downstream velocity toward the target speed
@@ -414,7 +428,7 @@ fn accel(@builtin(global_invocation_id) gid: vec3u) {
 @compute @workgroup_size(${WORKGROUP})
 fn integrate(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
-  if (i >= P.counts.x) { return; }
+  if (i >= P.live.x) { return; }
   let xi = particles[P.counts.x + i].pos.xyz;
   let vs = fluid[P.counts.x + i].xyz;
   let c = cellCoords(xi);
@@ -432,6 +446,17 @@ fn integrate(@builtin(global_invocation_id) gid: vec3u) {
         if (j != P.counts.x + i && r2 < P.kernel.y) {
           // j indexes B (offset n); aux sits at j − n and v* at j.
           v += (eps * mass * poly6(r2) / fluid[j - P.counts.x].x) * (fluid[j].xyz - vs);
+        }
+      }
+      // Friction with the static walls: the same smoothing toward the walls'
+      // velocity (zero), scaled. Off (free-slip) unless a scene asks for it.
+      if (P.bodyMisc.y > 0.0) {
+        rowRange(&range, c, dy, dz, true);
+        for (var j = range.x; j < range.y; j++) {
+          let w = boundary[j];
+          let d = xi - w.xyz;
+          let r2 = dot(d, d);
+          if (r2 < P.kernel.y) { v -= (P.bodyMisc.y * eps * w.w * poly6(r2) / P.fluid.y) * vs; }
         }
       }
     }

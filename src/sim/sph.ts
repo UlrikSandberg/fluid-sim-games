@@ -1,4 +1,4 @@
-import { dimOf, mouseAccel, mouseSpeedCap, obstacleMass, particleMass, particleRadius, type Domain, type Params } from './params.ts'
+import { dimOf, gravityAt, mouseAccel, mouseSpeedCap, obstacleMass, particleMass, particleRadius, type Domain, type Params } from './params.ts'
 import { mulberry32 } from './rng.ts'
 import { cross, normalize, quatFromAxisAngle, quatMultiply, rotate, type Quat } from './quat.ts'
 import { makeKernels, poly6, spikyGradMag, type Kernels } from './kernels.ts'
@@ -622,7 +622,8 @@ export function integrateObstacle(o: Obstacle, p: Params, frame?: FrameMotion) {
     const mass = bodyMass(o, p)
     const inertia = boxInertia(mass, o.halfSize)
     const g = o.gravityScale ?? 1
-    const acc = o.vel.map((_, d) => o.force[d] / mass + p.gravity[d] * g)
+    const down = gravityAt(p, o.center) // gravity where the body is
+    const acc = o.vel.map((_, d) => o.force[d] / mass + down[d] * g)
     if (frame) frameAccel(frame, o.center, o.vel, 0, dim, acc, 0)
     for (let d = 0; d < dim; d++) {
       o.vel[d] += acc[d] * dt
@@ -633,7 +634,7 @@ export function integrateObstacle(o: Obstacle, p: Params, frame?: FrameMotion) {
     if (o.ballast && dim === 3) {
       // Weight acting below the centre: a righting torque (the arm turns with the body).
       const arm = rotate(o.q, [0, -o.ballast * o.halfSize[1], 0])
-      const weight = p.gravity.map((v) => v * g * mass)
+      const weight = down.map((v) => v * g * mass)
       const t = cross(arm, weight)
       for (let k = 0; k < 3; k++) torque[k] += t[k]
     }
@@ -853,8 +854,11 @@ function computeAccelerations(s: SimState, p: Params, k: Kernels, frame?: FrameM
   const o = s.obstacle
   const bodyStart = n + s.nWall
 
+  const pulled = (p.attractors?.length ?? 0) > 0
+  const g: number[] = []
   for (let i = 0; i < n; i++) {
-    for (let d = 0; d < dim; d++) acc[i * dim + d] = p.gravity[d]
+    if (pulled) gravityAt(p, pos.subarray(i * dim, i * dim + dim), g)
+    for (let d = 0; d < dim; d++) acc[i * dim + d] = pulled ? g[d] : p.gravity[d]
     if (frame) frameAccel(frame, pos, vel, i * dim, dim, acc, i * dim)
   }
 

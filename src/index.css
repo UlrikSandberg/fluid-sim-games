@@ -803,3 +803,17 @@ body,
   align-items: center;
   margin-top: 6px;
 }
+
+/* Water planet */
+.canvas-3d.tool-active {
+  cursor: crosshair;
+}
+
+.row-text {
+  margin-top: 4px;
+  color: #8b949e;
+}
+
+.panel .note.estimate {
+  margin: 4px 0 0;
+}
